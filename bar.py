@@ -1,6 +1,7 @@
 import json
 import re
 import urllib.parse
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -18,6 +19,7 @@ st.set_page_config(
 
 MENU_FILE = Path(__file__).with_name("menu_bar.json")
 CONFIG_FILE = Path(__file__).with_name("config_bar.json")
+MESAS_FILE = Path(__file__).with_name("mesas_bar.json")
 MARCA_DIR = Path(__file__).with_name("assets")
 MARCA_FILE = MARCA_DIR / "marca_bar"
 
@@ -25,6 +27,7 @@ CONFIG_DEFAULT = {
     "whatsapp_telefono": "",  # Prefijo país + número, sin + ni espacios. Ej: 34612345678
     "nombre_bar": "Cuenta del Bar",
     "imagen_marca": "",  # Nombre de archivo dentro de assets/, vacío si no hay
+    "barmans": [],  # Nombres de los barmans que usan la app en el móvil
 }
 
 EXTENSIONES_IMAGEN = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -133,17 +136,28 @@ def cargar_config() -> dict:
     config["whatsapp_telefono"] = normalizar_telefono(
         str(config.get("whatsapp_telefono", ""))
     )
-    config["nombre_bar"] = str(config.get("nombre_bar") or CONFIG_DEFAULT["nombre_bar"]).strip()
+    config["nombre_bar"] = str(
+        config.get("nombre_bar") or CONFIG_DEFAULT["nombre_bar"]
+    ).strip()
     if not config["nombre_bar"]:
         config["nombre_bar"] = CONFIG_DEFAULT["nombre_bar"]
     config["imagen_marca"] = str(config.get("imagen_marca") or "").strip()
-    # Si el archivo ya no existe, limpiar la referencia
     if config["imagen_marca"] and not (MARCA_DIR / config["imagen_marca"]).exists():
         config["imagen_marca"] = ""
+    barmans = config.get("barmans") or []
+    if not isinstance(barmans, list):
+        barmans = []
+    config["barmans"] = sorted(
+        {str(b).strip() for b in barmans if str(b).strip()},
+        key=str.casefold,
+    )
     return config
 
 
 def guardar_config(config: dict) -> None:
+    barmans = config.get("barmans") or []
+    if not isinstance(barmans, list):
+        barmans = []
     payload = {
         "whatsapp_telefono": normalizar_telefono(
             str(config.get("whatsapp_telefono", ""))
@@ -153,6 +167,10 @@ def guardar_config(config: dict) -> None:
         ).strip()
         or CONFIG_DEFAULT["nombre_bar"],
         "imagen_marca": str(config.get("imagen_marca") or "").strip(),
+        "barmans": sorted(
+            {str(b).strip() for b in barmans if str(b).strip()},
+            key=str.casefold,
+        ),
     }
     CONFIG_FILE.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
@@ -166,6 +184,22 @@ def normalizar_telefono(valor: str) -> str:
     if digitos.startswith("00"):
         digitos = digitos[2:]
     return digitos
+
+
+def ahora_iso() -> str:
+    return datetime.now().replace(microsecond=0).isoformat(sep=" ")
+
+
+def formatear_ts(ts: str) -> str:
+    """Muestra fecha/hora legible; acepta ISO con espacio o T."""
+    if not ts:
+        return "—"
+    try:
+        bruto = ts.replace("T", " ", 1)
+        dt = datetime.fromisoformat(bruto)
+        return dt.strftime("%d/%m/%Y %H:%M:%S")
+    except ValueError:
+        return ts
 
 
 def ruta_imagen_marca(config: dict | None = None) -> Path | None:
@@ -183,7 +217,6 @@ def guardar_imagen_marca(archivo) -> str:
     extension = Path(archivo.name).suffix.lower()
     if extension not in EXTENSIONES_IMAGEN:
         raise ValueError("Formato no válido. Usa PNG, JPG, WEBP o GIF.")
-    # Borrar marcas anteriores
     for viejo in MARCA_DIR.glob("marca_bar.*"):
         viejo.unlink(missing_ok=True)
     destino = MARCA_DIR / f"marca_bar{extension}"
@@ -197,30 +230,95 @@ def eliminar_imagen_marca() -> None:
             viejo.unlink(missing_ok=True)
 
 
+def normalizar_estructura_mesa(datos) -> dict:
+    """Garantiza comensales + historial + abierta_en."""
+    if not isinstance(datos, dict):
+        return {"abierta_en": ahora_iso(), "comensales": {}, "historial": []}
+    comensales = datos.get("comensales")
+    if not isinstance(comensales, dict):
+        comensales = {}
+    # Normalizar cantidades a int
+    limpios = {}
+    for persona, consumo in comensales.items():
+        if isinstance(consumo, dict):
+            limpios[str(persona)] = {
+                str(prod): int(cant)
+                for prod, cant in consumo.items()
+                if int(cant) > 0
+            }
+    historial = datos.get("historial")
+    if not isinstance(historial, list):
+        historial = []
+    return {
+        "abierta_en": str(datos.get("abierta_en") or ahora_iso()),
+        "comensales": limpios,
+        "historial": historial,
+    }
+
+
+def cargar_mesas() -> dict:
+    if not MESAS_FILE.exists():
+        return {}
+    try:
+        raw = json.loads(MESAS_FILE.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return {}
+        return {
+            str(nombre): normalizar_estructura_mesa(datos)
+            for nombre, datos in raw.items()
+        }
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {}
+
+
+def guardar_mesas() -> None:
+    payload = {}
+    for nombre, datos in st.session_state.mesas.items():
+        mesa = normalizar_estructura_mesa(datos)
+        payload[nombre] = mesa
+        st.session_state.mesas[nombre] = mesa
+    MESAS_FILE.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
 def init_state() -> None:
     if "menu" not in st.session_state:
         st.session_state.menu = cargar_menu()
-    if "config" not in st.session_state:
-        st.session_state.config = cargar_config()
-    if "mesas" not in st.session_state:
-        # Migración desde el modelo antiguo (pedidos planos = una sola mesa)
-        if "pedidos" in st.session_state and st.session_state.pedidos:
-            st.session_state.mesas = {
-                "Mesa 1": {"comensales": dict(st.session_state.pedidos)}
-            }
-            del st.session_state.pedidos
-        else:
-            st.session_state.mesas = {}
+    # Config y mesas siempre desde disco (varios móviles / barmans)
+    st.session_state.config = cargar_config()
+    if "pedidos" in st.session_state and st.session_state.pedidos:
+        legacy = {
+            "Mesa 1": normalizar_estructura_mesa(
+                {"comensales": dict(st.session_state.pedidos)}
+            )
+        }
+        del st.session_state.pedidos
+        if not MESAS_FILE.exists():
+            st.session_state.mesas = legacy
+            guardar_mesas()
+    st.session_state.mesas = cargar_mesas()
     if "mesa_activa" not in st.session_state:
+        mesas = list(st.session_state.mesas.keys())
+        st.session_state.mesa_activa = mesas[0] if mesas else None
+    elif (
+        st.session_state.mesa_activa
+        and st.session_state.mesa_activa not in st.session_state.mesas
+    ):
         mesas = list(st.session_state.mesas.keys())
         st.session_state.mesa_activa = mesas[0] if mesas else None
     if "persona_activa" not in st.session_state:
         st.session_state.persona_activa = None
     if "ultimo_aviso" not in st.session_state:
         st.session_state.ultimo_aviso = None
-    # Limpieza residual del modelo antiguo
+    if "barman_activo" not in st.session_state:
+        st.session_state.barman_activo = None
     if "pedidos" in st.session_state:
         del st.session_state.pedidos
+    barmans = st.session_state.config.get("barmans") or []
+    if st.session_state.barman_activo not in barmans:
+        st.session_state.barman_activo = None
 
 
 def set_menu(menu: dict[str, Decimal]) -> None:
@@ -240,18 +338,77 @@ def set_config(cambios: dict) -> None:
         or CONFIG_DEFAULT["nombre_bar"]
     )
     actual["imagen_marca"] = str(actual.get("imagen_marca") or "").strip()
+    barmans = actual.get("barmans") or []
+    if not isinstance(barmans, list):
+        barmans = []
+    actual["barmans"] = sorted(
+        {str(b).strip() for b in barmans if str(b).strip()},
+        key=str.casefold,
+    )
     st.session_state.config = {
         "whatsapp_telefono": actual["whatsapp_telefono"],
         "nombre_bar": actual["nombre_bar"],
         "imagen_marca": actual["imagen_marca"],
+        "barmans": actual["barmans"],
     }
     guardar_config(st.session_state.config)
+    if st.session_state.get("barman_activo") not in actual["barmans"]:
+        st.session_state.barman_activo = None
 
 
 def nombre_del_bar() -> str:
     return str(
         st.session_state.config.get("nombre_bar") or CONFIG_DEFAULT["nombre_bar"]
     )
+
+
+def lista_barmans() -> list[str]:
+    return list(st.session_state.config.get("barmans") or [])
+
+
+def barman_activo() -> str | None:
+    return st.session_state.get("barman_activo")
+
+
+def exigir_barman() -> bool:
+    """True si hay barman identificado; si no, muestra aviso."""
+    if barman_activo():
+        return True
+    st.warning(
+        "Identifícate como barman en la barra lateral (**Quién soy**) "
+        "antes de registrar pedidos. Así queda trazabilidad de quién apuntó cada cosa."
+    )
+    return False
+
+
+def registrar_evento(
+    mesa: str,
+    accion: str,
+    *,
+    comensal: str = "",
+    producto: str = "",
+    cantidad_delta: int = 0,
+    cantidad_resultante: int = 0,
+    detalle: str = "",
+    persistir: bool = True,
+) -> None:
+    if mesa not in st.session_state.mesas:
+        return
+    st.session_state.mesas[mesa].setdefault("historial", []).append(
+        {
+            "ts": ahora_iso(),
+            "barman": barman_activo() or "(sin identificar)",
+            "comensal": comensal,
+            "accion": accion,
+            "producto": producto,
+            "cantidad_delta": int(cantidad_delta),
+            "cantidad_resultante": int(cantidad_resultante),
+            "detalle": detalle,
+        }
+    )
+    if persistir:
+        guardar_mesas()
+
 
 
 # ============================================
@@ -322,16 +479,31 @@ def asignar_comensal_a_mesa(nombre: str, mesa_destino: str) -> tuple[str | None,
 
     if origen:
         mover_comensal(nombre_ok, mesa_destino)
+        registrar_evento(
+            mesa_destino,
+            "mover",
+            comensal=nombre_ok,
+            detalle=f"Movido de «{origen}» a «{mesa_destino}»",
+            persistir=False,
+        )
         aviso = (
             f"{nombre_ok} movido de «{origen}» a «{mesa_destino}» "
             "(conserva sus consumiciones)."
         )
     else:
         st.session_state.mesas[mesa_destino]["comensales"][nombre_ok] = {}
+        registrar_evento(
+            mesa_destino,
+            "asignar",
+            comensal=nombre_ok,
+            detalle=f"Comensal asignado a «{mesa_destino}»",
+            persistir=False,
+        )
         aviso = f"{nombre_ok} asignado a la mesa «{mesa_destino}»."
 
     st.session_state.mesa_activa = mesa_destino
     st.session_state.persona_activa = nombre_ok
+    guardar_mesas()
     return None, aviso
 
 
@@ -341,9 +513,21 @@ def crear_mesa(nombre: str) -> str | None:
         return "El nombre de la mesa no puede estar vacío."
     if nombre_ok in st.session_state.mesas:
         return f"Ya existe la mesa «{nombre_ok}»."
-    st.session_state.mesas[nombre_ok] = {"comensales": {}}
+    abierta = ahora_iso()
+    st.session_state.mesas[nombre_ok] = {
+        "abierta_en": abierta,
+        "comensales": {},
+        "historial": [],
+    }
+    registrar_evento(
+        nombre_ok,
+        "abrir",
+        detalle=f"Mesa abierta a las {formatear_ts(abierta)}",
+        persistir=False,
+    )
     st.session_state.mesa_activa = nombre_ok
     st.session_state.persona_activa = None
+    guardar_mesas()
     return None
 
 
@@ -353,6 +537,7 @@ def eliminar_mesa(nombre: str) -> None:
         restantes = list(st.session_state.mesas.keys())
         st.session_state.mesa_activa = restantes[0] if restantes else None
         st.session_state.persona_activa = None
+    guardar_mesas()
 
 
 def renombrar_mesa(antiguo: str, nuevo: str) -> str | None:
@@ -366,14 +551,28 @@ def renombrar_mesa(antiguo: str, nuevo: str) -> str | None:
     st.session_state.mesas[nuevo_ok] = st.session_state.mesas.pop(antiguo)
     if st.session_state.mesa_activa == antiguo:
         st.session_state.mesa_activa = nuevo_ok
+    registrar_evento(
+        nuevo_ok,
+        "renombrar",
+        detalle=f"Renombrada de «{antiguo}» a «{nuevo_ok}»",
+        persistir=False,
+    )
+    guardar_mesas()
     return None
 
 
 def vaciar_mesa(nombre: str) -> None:
     if nombre in st.session_state.mesas:
+        registrar_evento(
+            nombre,
+            "vaciar",
+            detalle="Mesa vaciada (comensales y consumiciones)",
+            persistir=False,
+        )
         st.session_state.mesas[nombre]["comensales"] = {}
         if st.session_state.mesa_activa == nombre:
             st.session_state.persona_activa = None
+        guardar_mesas()
 
 
 def total_mesa(mesa: str, menu: dict[str, Decimal]) -> Decimal:
@@ -390,12 +589,14 @@ def renombrar_producto_en_pedidos(antiguo: str, nuevo: str) -> None:
             if antiguo in consumo:
                 cantidad = consumo.pop(antiguo)
                 consumo[nuevo] = consumo.get(nuevo, 0) + cantidad
+    guardar_mesas()
 
 
 def eliminar_producto_de_pedidos(producto: str) -> None:
     for mesa in st.session_state.mesas.values():
         for consumo in mesa["comensales"].values():
             consumo.pop(producto, None)
+    guardar_mesas()
 
 
 # ============================================
@@ -454,12 +655,16 @@ def generar_mensaje_whatsapp(
     menu: dict[str, Decimal],
     nombre_bar: str = "",
     nombre_mesa: str = "",
+    historial: list | None = None,
 ) -> str:
     """Mensaje en texto plano (sin emojis) para que WhatsApp no muestre caracteres rotos."""
     titulo = (nombre_bar or "Cuenta del Bar").strip()
     lineas = [f"*{titulo}*", "*CUENTA*"]
     if nombre_mesa:
         lineas.append(f"*Mesa: {nombre_mesa}*")
+    lineas.append(f"Emitido: {formatear_ts(ahora_iso())}")
+    if barman_activo():
+        lineas.append(f"Barman: {barman_activo()}")
     lineas.append("")
     total_general = Decimal("0.00")
 
@@ -489,6 +694,24 @@ def generar_mensaje_whatsapp(
         lineas.append(f"*TOTAL MESA: {total_general:.2f} EUR*")
     lineas.append("")
     lineas.append("Cuadre perfecto - No falta nada")
+
+    if historial:
+        lineas.append("")
+        lineas.append("*TRAZABILIDAD (ultimos movimientos)*")
+        for ev in historial[-12:]:
+            ts = formatear_ts(str(ev.get("ts", "")))
+            barman = ev.get("barman", "?")
+            accion = ev.get("accion", "")
+            comensal = ev.get("comensal", "")
+            producto = nombre_limpio(str(ev.get("producto", "")))
+            delta = ev.get("cantidad_delta", 0)
+            if producto:
+                lineas.append(
+                    f"- {ts} | {barman} | {accion} {comensal} {producto} ({delta:+d})"
+                )
+            else:
+                detalle = ev.get("detalle") or accion
+                lineas.append(f"- {ts} | {barman} | {detalle}")
     return "\n".join(lineas)
 
 
@@ -675,6 +898,7 @@ def ui_crud_menu() -> None:
             st.session_state.mesas = {}
             st.session_state.mesa_activa = None
             st.session_state.persona_activa = None
+            guardar_mesas()
             st.success("Menú restaurado al valor por defecto. Mesas vaciadas.")
             st.rerun()
     with c_info:
@@ -705,12 +929,20 @@ def ui_gestion_mesas() -> None:
             help="Crea una mesa vacía y la deja seleccionada.",
         )
         if crear:
-            error = crear_mesa(nombre)
-            if error:
-                st.error(error)
+            if not barman_activo():
+                st.error(
+                    "Identifícate como barman en la barra lateral antes de abrir una mesa."
+                )
             else:
-                st.success(f"Mesa creada y seleccionada: {nombre.strip()}")
-                st.rerun()
+                error = crear_mesa(nombre)
+                if error:
+                    st.error(error)
+                else:
+                    st.success(
+                        f"Mesa creada por {barman_activo()}: {nombre.strip()} "
+                        f"({formatear_ts(ahora_iso())})"
+                    )
+                    st.rerun()
 
     mesas = st.session_state.mesas
     if not mesas:
@@ -855,12 +1087,15 @@ def ui_personas() -> None | str:
         st.caption(f"Se asignará a: **{mesa_destino}**")
 
         if anadir:
-            error, aviso = asignar_comensal_a_mesa(nueva, mesa_destino)
-            if error:
-                st.warning(error)
+            if not exigir_barman():
+                pass
             else:
-                st.success(aviso)
-                st.rerun()
+                error, aviso = asignar_comensal_a_mesa(nueva, mesa_destino)
+                if error:
+                    st.warning(error)
+                else:
+                    st.success(aviso)
+                    st.rerun()
 
     st.markdown("#### Comensales por mesa")
     hay_alguien = False
@@ -962,9 +1197,19 @@ def ui_personas() -> None | str:
                 "No se puede deshacer."
             ),
         ):
+            if not exigir_barman():
+                st.stop()
             del pedidos[persona]
+            registrar_evento(
+                mesa,
+                "quitar_comensal",
+                comensal=persona,
+                detalle=f"Comensal {persona} eliminado de «{mesa}»",
+                persistir=False,
+            )
             restantes = list(pedidos.keys())
             st.session_state.persona_activa = restantes[0] if restantes else None
+            guardar_mesas()
             st.success(f"{persona} eliminado de «{mesa}».")
             st.rerun()
 
@@ -1006,6 +1251,8 @@ def ui_resumen_pedido_actual(persona: str) -> None:
                 key=f"pedido_menos_{mesa}_{persona}_{producto}",
                 help=f"Quitar 1 unidad de «{producto}» del pedido de {persona}.",
             ):
+                if not exigir_barman():
+                    st.stop()
                 ajustar_cantidad(persona, producto, -1)
                 st.session_state.ultimo_aviso = (
                     f"Quitada 1 unidad de «{nombre_limpio(producto)}» a {persona}."
@@ -1017,6 +1264,8 @@ def ui_resumen_pedido_actual(persona: str) -> None:
                 key=f"pedido_mas_{mesa}_{persona}_{producto}",
                 help=f"Añadir 1 unidad más de «{producto}» a {persona}.",
             ):
+                if not exigir_barman():
+                    st.stop()
                 ajustar_cantidad(persona, producto, 1)
                 st.session_state.ultimo_aviso = (
                     f"Añadida 1 unidad de «{nombre_limpio(producto)}» a {persona}."
@@ -1029,7 +1278,9 @@ def ui_resumen_pedido_actual(persona: str) -> None:
                 key=f"pedido_del_{mesa}_{persona}_{producto}",
                 help=f"Eliminar «{producto}» del pedido de {persona}.",
             ):
-                del comensales_de(mesa)[persona][producto]
+                if not exigir_barman():
+                    st.stop()
+                eliminar_linea_pedido(persona, producto)
                 st.session_state.ultimo_aviso = (
                     f"Eliminado «{nombre_limpio(producto)}» del pedido de {persona}."
                 )
@@ -1044,10 +1295,16 @@ def ui_anadir_consumiciones(persona: str) -> None:
     menu = st.session_state.menu
     mesa = st.session_state.mesa_activa
     st.markdown(f"### Pedido de {persona} · {mesa}")
-    st.caption(
-        f"Pulsa un producto para sumar una unidad al pedido de {persona} en «{mesa}». "
-        "Verás el resumen actualizado al instante debajo."
-    )
+    if barman_activo():
+        st.caption(
+            f"Barman: **{barman_activo()}** · Cada pulsación se registra con fecha y hora. "
+            f"Pulsa un producto para sumar una unidad a {persona} en «{mesa}»."
+        )
+    else:
+        st.caption("Identifícate como barman para poder registrar consumiciones.")
+
+    if not exigir_barman():
+        return
 
     if st.session_state.ultimo_aviso:
         st.success(st.session_state.ultimo_aviso)
@@ -1079,13 +1336,16 @@ def ui_anadir_consumiciones(persona: str) -> None:
                     use_container_width=True,
                     help=(
                         f"Añadir 1 unidad de «{producto}» "
-                        f"({precio:.2f} euros) al pedido de {persona} en «{mesa}»."
+                        f"({precio:.2f} euros) al pedido de {persona} en «{mesa}». "
+                        "Queda registrado con fecha, hora y barman."
                     ),
                 ):
-                    consumo[producto] = cantidad_actual + 1
+                    ajustar_cantidad(persona, producto, 1)
+                    nueva = comensales_de(mesa)[persona].get(producto, 0)
                     st.session_state.ultimo_aviso = (
                         f"Añadido: 1 × {nombre_limpio(producto)} a {persona} "
-                        f"(«{mesa}»). Ahora lleva {consumo[producto]}."
+                        f"(«{mesa}») por {barman_activo()} a las "
+                        f"{formatear_ts(ahora_iso())}. Ahora lleva {nueva}."
                     )
                     st.rerun()
 
@@ -1096,11 +1356,40 @@ def ui_anadir_consumiciones(persona: str) -> None:
 def ajustar_cantidad(persona: str, producto: str, delta: int) -> None:
     mesa = st.session_state.mesa_activa
     consumo = comensales_de(mesa)[persona]
-    nueva = consumo.get(producto, 0) + delta
+    anterior = consumo.get(producto, 0)
+    nueva = anterior + delta
     if nueva <= 0:
         consumo.pop(producto, None)
+        nueva = 0
+        accion = "eliminar" if delta < 0 and anterior > 0 else "quitar"
     else:
         consumo[producto] = nueva
+        accion = "añadir" if delta > 0 else "quitar"
+    registrar_evento(
+        mesa,
+        accion,
+        comensal=persona,
+        producto=producto,
+        cantidad_delta=delta,
+        cantidad_resultante=nueva,
+        detalle=f"{accion} {nombre_limpio(producto)}",
+    )
+
+
+def eliminar_linea_pedido(persona: str, producto: str) -> None:
+    mesa = st.session_state.mesa_activa
+    consumo = comensales_de(mesa)[persona]
+    anterior = consumo.pop(producto, 0)
+    if anterior:
+        registrar_evento(
+            mesa,
+            "eliminar",
+            comensal=persona,
+            producto=producto,
+            cantidad_delta=-anterior,
+            cantidad_resultante=0,
+            detalle=f"Eliminadas {anterior} ud. de {nombre_limpio(producto)}",
+        )
 
 
 def ui_ticket() -> Decimal:
@@ -1113,8 +1402,13 @@ def ui_ticket() -> Decimal:
         return Decimal("0.00")
 
     st.caption(
-        f"Ticket de **{mesa}**. Revisa cantidades e importes. "
-        "Usa los botones para restar, sumar o eliminar líneas."
+        f"Ticket de **{mesa}**. "
+        + (
+            f"Abierta: {formatear_ts(st.session_state.mesas[mesa].get('abierta_en', ''))}. "
+            if mesa in st.session_state.mesas
+            else ""
+        )
+        + "Revisa cantidades e importes. Cada cambio queda con fecha, hora y barman."
     )
 
     pedidos = comensales_de(mesa)
@@ -1153,6 +1447,8 @@ def ui_ticket() -> Decimal:
                             f"Cantidad actual: {cantidad}."
                         ),
                     ):
+                        if not exigir_barman():
+                            st.stop()
                         ajustar_cantidad(persona, producto, -1)
                         st.rerun()
                     b2.markdown(f"**{cantidad}**")
@@ -1164,6 +1460,8 @@ def ui_ticket() -> Decimal:
                             f"Cantidad actual: {cantidad}."
                         ),
                     ):
+                        if not exigir_barman():
+                            st.stop()
                         ajustar_cantidad(persona, producto, 1)
                         st.rerun()
 
@@ -1176,11 +1474,39 @@ def ui_ticket() -> Decimal:
                             f"({cantidad}) del pedido de {persona}."
                         ),
                     ):
-                        del pedidos[persona][producto]
+                        if not exigir_barman():
+                            st.stop()
+                        eliminar_linea_pedido(persona, producto)
                         st.rerun()
 
                 st.markdown(f"**Total de {persona}: {total_persona:.2f} €**")
                 total_general += total_persona
+
+    # Trazabilidad
+    historial = list(st.session_state.mesas.get(mesa, {}).get("historial") or [])
+    with st.expander(
+        f"Trazabilidad de «{mesa}» ({len(historial)} eventos)",
+        expanded=False,
+    ):
+        if not historial:
+            st.caption("Aún no hay movimientos registrados.")
+        else:
+            st.caption("Útil para reclamaciones: quién apuntó qué y cuándo.")
+            for ev in reversed(historial[-50:]):
+                ts = formatear_ts(str(ev.get("ts", "")))
+                barman = ev.get("barman", "?")
+                accion = ev.get("accion", "")
+                comensal = ev.get("comensal") or "—"
+                producto = ev.get("producto") or ""
+                detalle = ev.get("detalle") or ""
+                delta = ev.get("cantidad_delta", 0)
+                if producto:
+                    st.markdown(
+                        f"- **{ts}** · {barman} · `{accion}` · {comensal} · "
+                        f"{producto} ({delta:+d})"
+                    )
+                else:
+                    st.markdown(f"- **{ts}** · {barman} · {detalle or accion}")
 
     return total_general
 
@@ -1232,6 +1558,7 @@ def ui_resumen_y_whatsapp(total_general: Decimal) -> None:
         st.session_state.menu,
         nombre_del_bar(),
         mesa,
+        historial=list(st.session_state.mesas.get(mesa, {}).get("historial") or []),
     )
     with st.expander("Vista previa del mensaje de WhatsApp", expanded=False):
         st.code(mensaje, language=None)
@@ -1265,7 +1592,89 @@ with st.sidebar:
     if logo:
         st.image(str(logo), use_container_width=True)
     st.title(nombre_del_bar())
-    st.caption("Gestiona mesas, comensales, menú, marca y precios.")
+    st.caption("Varios barmans · mesas compartidas · trazabilidad con fecha/hora.")
+
+    with st.expander(
+        "Quién soy (barman)",
+        expanded=not barman_activo(),
+    ):
+        st.caption(
+            "Cada barman usa la app en su móvil. Identifícate para que "
+            "los pedidos queden firmados con tu nombre, fecha y hora."
+        )
+        barmans = lista_barmans()
+        if barmans:
+            opciones = ["(elige tu nombre)"] + barmans
+            actual = barman_activo()
+            idx = opciones.index(actual) if actual in opciones else 0
+            elegido = st.selectbox(
+                "Barman en este teléfono",
+                options=opciones,
+                index=idx,
+                help="Selecciona quién está usando la app ahora.",
+                key="select_barman_activo",
+            )
+            if elegido != "(elige tu nombre)" and elegido != actual:
+                st.session_state.barman_activo = elegido
+                st.success(f"Identificado como {elegido}")
+                st.rerun()
+            if actual:
+                st.caption(f"Activo: **{actual}** · {formatear_ts(ahora_iso())}")
+            if st.button(
+                "Cerrar sesión de barman",
+                use_container_width=True,
+                help="Quita la identificación de este teléfono.",
+                disabled=not actual,
+            ):
+                st.session_state.barman_activo = None
+                st.rerun()
+        else:
+            st.info("Todavía no hay barmans. Añade el primero abajo.")
+
+        st.markdown("---")
+        st.markdown("**Alta de barmans**")
+        nuevo_barman = st.text_input(
+            "Nombre del barman",
+            placeholder="Ej: Ana",
+            help="Nombre que aparecerá en la trazabilidad de cada pedido.",
+            key="input_nuevo_barman",
+        )
+        c_ab, c_bb = st.columns(2)
+        with c_ab:
+            if st.button(
+                "Añadir barman",
+                use_container_width=True,
+                type="primary",
+                help="Registra un barman para poder seleccionarlo en los móviles.",
+            ):
+                nombre_b = " ".join((nuevo_barman or "").strip().split())
+                if not nombre_b:
+                    st.error("Escribe un nombre.")
+                elif any(nombre_b.casefold() == b.casefold() for b in barmans):
+                    st.error(f"«{nombre_b}» ya está en la lista.")
+                else:
+                    set_config({"barmans": barmans + [nombre_b]})
+                    st.session_state.barman_activo = nombre_b
+                    st.success(f"Barman añadido e identificado: {nombre_b}")
+                    st.rerun()
+        with c_bb:
+            if barmans:
+                a_borrar = st.selectbox(
+                    "Eliminar barman",
+                    options=barmans,
+                    key="select_borrar_barman",
+                    label_visibility="collapsed",
+                )
+                if st.button(
+                    "Eliminar",
+                    use_container_width=True,
+                    help=f"Quita a «{a_borrar}» de la lista de barmans.",
+                ):
+                    set_config(
+                        {"barmans": [b for b in barmans if b != a_borrar]}
+                    )
+                    st.success(f"Barman eliminado: {a_borrar}")
+                    st.rerun()
 
     with st.expander("Marca del bar", expanded=False):
         st.caption("Nombre e imagen que se muestran en la app y en el mensaje de WhatsApp.")
@@ -1427,6 +1836,7 @@ with st.sidebar:
         st.session_state.mesas = {}
         st.session_state.mesa_activa = None
         st.session_state.persona_activa = None
+        guardar_mesas()
         st.success("Todas las mesas han sido cerradas.")
         st.rerun()
 
@@ -1439,14 +1849,14 @@ if logo_principal:
     with col_titulo:
         st.markdown(f"## {nombre_del_bar()}")
         st.caption(
-            "Navegación: Mesas → Pedido → Ticket. "
-            "Menú para productos; barra lateral para marca y WhatsApp."
+            "Navegación: identifícate como barman → Mesas → Pedido → Ticket. "
+            "Menú y marca en la barra lateral. Varios móviles comparten las mesas."
         )
 else:
     st.markdown(f"## {nombre_del_bar()}")
     st.caption(
-        "Empieza por la pestaña Mesas, luego Pedido y Ticket. "
-        "Configura nombre e imagen en la barra lateral → Marca del bar."
+        "Identifícate en Quién soy, crea mesas y apunta pedidos. "
+        "Todo queda con fecha, hora y barman para reclamaciones."
     )
 
 tab_mesas, tab_pedido, tab_ticket, tab_menu = st.tabs(
