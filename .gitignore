@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.py[cod]
+.idea/
+.agents/
+.claude/
+.streamlit/secrets.toml
+menu_bar.json
+*.xlsx
+.DS_Store
+Thumbs.db
