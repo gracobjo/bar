@@ -202,12 +202,25 @@ def init_state() -> None:
         st.session_state.menu = cargar_menu()
     if "config" not in st.session_state:
         st.session_state.config = cargar_config()
-    if "pedidos" not in st.session_state:
-        st.session_state.pedidos = {}
+    if "mesas" not in st.session_state:
+        # Migración desde el modelo antiguo (pedidos planos = una sola mesa)
+        if "pedidos" in st.session_state and st.session_state.pedidos:
+            st.session_state.mesas = {
+                "Mesa 1": {"comensales": dict(st.session_state.pedidos)}
+            }
+            del st.session_state.pedidos
+        else:
+            st.session_state.mesas = {}
+    if "mesa_activa" not in st.session_state:
+        mesas = list(st.session_state.mesas.keys())
+        st.session_state.mesa_activa = mesas[0] if mesas else None
     if "persona_activa" not in st.session_state:
         st.session_state.persona_activa = None
     if "ultimo_aviso" not in st.session_state:
         st.session_state.ultimo_aviso = None
+    # Limpieza residual del modelo antiguo
+    if "pedidos" in st.session_state:
+        del st.session_state.pedidos
 
 
 def set_menu(menu: dict[str, Decimal]) -> None:
@@ -241,16 +254,148 @@ def nombre_del_bar() -> str:
     )
 
 
+# ============================================
+# MESAS Y COMENSALES
+# ============================================
+def comensales_de(mesa: str | None = None) -> dict[str, dict]:
+    """Devuelve el dict de comensales de una mesa (por defecto la activa)."""
+    nombre = mesa if mesa is not None else st.session_state.mesa_activa
+    if not nombre or nombre not in st.session_state.mesas:
+        return {}
+    return st.session_state.mesas[nombre]["comensales"]
+
+
+def encontrar_mesa_de_comensal(nombre: str) -> str | None:
+    """Devuelve la mesa donde está sentado el comensal, o None."""
+    for mesa, datos in st.session_state.mesas.items():
+        if nombre in datos["comensales"]:
+            return mesa
+    return None
+
+
+def asegurar_mesa_activa() -> str | None:
+    """Corrige mesa_activa si apunta a una mesa inexistente."""
+    mesas = st.session_state.mesas
+    if not mesas:
+        st.session_state.mesa_activa = None
+        st.session_state.persona_activa = None
+        return None
+    if st.session_state.mesa_activa not in mesas:
+        st.session_state.mesa_activa = next(iter(mesas))
+    return st.session_state.mesa_activa
+
+
+def mover_comensal(nombre: str, mesa_destino: str) -> str | None:
+    """Mueve un comensal (y su consumo) a otra mesa. Mantiene una sola mesa por persona."""
+    if mesa_destino not in st.session_state.mesas:
+        return f"La mesa «{mesa_destino}» no existe."
+    origen = encontrar_mesa_de_comensal(nombre)
+    if origen == mesa_destino:
+        return None
+    if origen:
+        consumo = st.session_state.mesas[origen]["comensales"].pop(nombre)
+    else:
+        consumo = {}
+    destino = st.session_state.mesas[mesa_destino]["comensales"]
+    if nombre in destino:
+        for producto, cantidad in consumo.items():
+            destino[nombre][producto] = destino[nombre].get(producto, 0) + cantidad
+    else:
+        destino[nombre] = consumo
+    return None
+
+
+def asignar_comensal_a_mesa(nombre: str, mesa_destino: str) -> tuple[str | None, str]:
+    """
+    Asigna un comensal nuevo o existente a una mesa.
+    Devuelve (error, mensaje_exito).
+    """
+    nombre_ok = " ".join(nombre.strip().split())
+    if not nombre_ok:
+        return "Escribe un nombre válido.", ""
+    if mesa_destino not in st.session_state.mesas:
+        return f"La mesa «{mesa_destino}» no existe.", ""
+
+    origen = encontrar_mesa_de_comensal(nombre_ok)
+    if origen == mesa_destino:
+        return f"{nombre_ok} ya está en «{mesa_destino}».", ""
+
+    if origen:
+        mover_comensal(nombre_ok, mesa_destino)
+        aviso = (
+            f"{nombre_ok} movido de «{origen}» a «{mesa_destino}» "
+            "(conserva sus consumiciones)."
+        )
+    else:
+        st.session_state.mesas[mesa_destino]["comensales"][nombre_ok] = {}
+        aviso = f"{nombre_ok} asignado a la mesa «{mesa_destino}»."
+
+    st.session_state.mesa_activa = mesa_destino
+    st.session_state.persona_activa = nombre_ok
+    return None, aviso
+
+
+def crear_mesa(nombre: str) -> str | None:
+    nombre_ok = " ".join(nombre.strip().split())
+    if not nombre_ok:
+        return "El nombre de la mesa no puede estar vacío."
+    if nombre_ok in st.session_state.mesas:
+        return f"Ya existe la mesa «{nombre_ok}»."
+    st.session_state.mesas[nombre_ok] = {"comensales": {}}
+    st.session_state.mesa_activa = nombre_ok
+    st.session_state.persona_activa = None
+    return None
+
+
+def eliminar_mesa(nombre: str) -> None:
+    st.session_state.mesas.pop(nombre, None)
+    if st.session_state.mesa_activa == nombre:
+        restantes = list(st.session_state.mesas.keys())
+        st.session_state.mesa_activa = restantes[0] if restantes else None
+        st.session_state.persona_activa = None
+
+
+def renombrar_mesa(antiguo: str, nuevo: str) -> str | None:
+    nuevo_ok = " ".join(nuevo.strip().split())
+    if not nuevo_ok:
+        return "El nombre de la mesa no puede estar vacío."
+    if nuevo_ok != antiguo and nuevo_ok in st.session_state.mesas:
+        return f"Ya existe la mesa «{nuevo_ok}»."
+    if nuevo_ok == antiguo:
+        return None
+    st.session_state.mesas[nuevo_ok] = st.session_state.mesas.pop(antiguo)
+    if st.session_state.mesa_activa == antiguo:
+        st.session_state.mesa_activa = nuevo_ok
+    return None
+
+
+def vaciar_mesa(nombre: str) -> None:
+    if nombre in st.session_state.mesas:
+        st.session_state.mesas[nombre]["comensales"] = {}
+        if st.session_state.mesa_activa == nombre:
+            st.session_state.persona_activa = None
+
+
+def total_mesa(mesa: str, menu: dict[str, Decimal]) -> Decimal:
+    total = Decimal("0.00")
+    for consumo in comensales_de(mesa).values():
+        for producto, cantidad in consumo.items():
+            total += menu.get(producto, Decimal("0.00")) * cantidad
+    return total
+
+
 def renombrar_producto_en_pedidos(antiguo: str, nuevo: str) -> None:
-    for consumo in st.session_state.pedidos.values():
-        if antiguo in consumo:
-            cantidad = consumo.pop(antiguo)
-            consumo[nuevo] = consumo.get(nuevo, 0) + cantidad
+    for mesa in st.session_state.mesas.values():
+        for consumo in mesa["comensales"].values():
+            if antiguo in consumo:
+                cantidad = consumo.pop(antiguo)
+                consumo[nuevo] = consumo.get(nuevo, 0) + cantidad
 
 
 def eliminar_producto_de_pedidos(producto: str) -> None:
-    for consumo in st.session_state.pedidos.values():
-        consumo.pop(producto, None)
+    for mesa in st.session_state.mesas.values():
+        for consumo in mesa["comensales"].values():
+            consumo.pop(producto, None)
 
 
 # ============================================
@@ -308,10 +453,14 @@ def generar_mensaje_whatsapp(
     pedidos: dict,
     menu: dict[str, Decimal],
     nombre_bar: str = "",
+    nombre_mesa: str = "",
 ) -> str:
     """Mensaje en texto plano (sin emojis) para que WhatsApp no muestre caracteres rotos."""
     titulo = (nombre_bar or "Cuenta del Bar").strip()
-    lineas = [f"*{titulo}*", "*CUENTA*", ""]
+    lineas = [f"*{titulo}*", "*CUENTA*"]
+    if nombre_mesa:
+        lineas.append(f"*Mesa: {nombre_mesa}*")
+    lineas.append("")
     total_general = Decimal("0.00")
 
     for persona, consumo in pedidos.items():
@@ -334,7 +483,10 @@ def generar_mensaje_whatsapp(
         total_general += total_persona
 
     lineas.append("-" * 20)
-    lineas.append(f"*TOTAL MESA: {total_general:.2f} EUR*")
+    if nombre_mesa:
+        lineas.append(f"*TOTAL {nombre_mesa}: {total_general:.2f} EUR*")
+    else:
+        lineas.append(f"*TOTAL MESA: {total_general:.2f} EUR*")
     lineas.append("")
     lineas.append("Cuadre perfecto - No falta nada")
     return "\n".join(lineas)
@@ -520,102 +672,314 @@ def ui_crud_menu() -> None:
             ),
         ):
             set_menu({k: Decimal(v) for k, v in MENU_DEFAULT.items()})
-            st.session_state.pedidos = {}
-            st.success("Menú restaurado al valor por defecto. Mesa vaciada.")
+            st.session_state.mesas = {}
+            st.session_state.mesa_activa = None
+            st.session_state.persona_activa = None
+            st.success("Menú restaurado al valor por defecto. Mesas vaciadas.")
             st.rerun()
     with c_info:
         st.caption(f"Guardado en `{MENU_FILE.name}` · {len(menu)} producto(s)")
 
 
 # ============================================
+# MESAS (UI)
+# ============================================
+def ui_gestion_mesas() -> None:
+    st.subheader("Gestión de mesas")
+    st.caption(
+        "Crea mesas y selecciónalas. Cada mesa tiene sus propios comensales. "
+        "Luego ve a Pedido para apuntar consumiciones."
+    )
+
+    with st.form("form_nueva_mesa", clear_on_submit=True):
+        c1, c2 = st.columns([3, 1])
+        nombre = c1.text_input(
+            "Nombre de la mesa",
+            placeholder="Ej: Mesa 1, Terraza A, Barra",
+            help="Identificador de la mesa en el local.",
+        )
+        crear = c2.form_submit_button(
+            "Crear mesa",
+            use_container_width=True,
+            type="primary",
+            help="Crea una mesa vacía y la deja seleccionada.",
+        )
+        if crear:
+            error = crear_mesa(nombre)
+            if error:
+                st.error(error)
+            else:
+                st.success(f"Mesa creada y seleccionada: {nombre.strip()}")
+                st.rerun()
+
+    mesas = st.session_state.mesas
+    if not mesas:
+        st.info("Todavía no hay mesas. Crea la primera arriba.")
+        return
+
+    st.markdown("---")
+    st.markdown(f"#### Mesas abiertas ({len(mesas)})")
+    menu = st.session_state.menu
+
+    for nombre_mesa, datos in list(mesas.items()):
+        comensales = datos["comensales"]
+        n_comensales = len(comensales)
+        total = total_mesa(nombre_mesa, menu)
+        activa = st.session_state.mesa_activa == nombre_mesa
+
+        with st.container(border=True):
+            cab1, cab2 = st.columns([3, 1])
+            with cab1:
+                etiqueta = f"**{nombre_mesa}**"
+                if activa:
+                    etiqueta += " · *seleccionada*"
+                st.markdown(etiqueta)
+                st.caption(
+                    f"{n_comensales} comensal(es) · Total: {total:.2f} €"
+                )
+            with cab2:
+                if st.button(
+                    "Seleccionar",
+                    key=f"sel_mesa_{nombre_mesa}",
+                    use_container_width=True,
+                    type="primary" if activa else "secondary",
+                    help=f"Trabajar con la mesa «{nombre_mesa}» en Pedido y Ticket.",
+                    disabled=activa,
+                ):
+                    st.session_state.mesa_activa = nombre_mesa
+                    st.session_state.persona_activa = None
+                    st.rerun()
+
+            if comensales:
+                nombres = ", ".join(comensales.keys())
+                st.caption(f"Comensales: {nombres}")
+            else:
+                st.caption("Sin comensales todavía.")
+
+            with st.form(f"form_edit_mesa_{nombre_mesa}"):
+                nuevo_nombre = st.text_input(
+                    f"Renombrar {nombre_mesa}",
+                    value=nombre_mesa,
+                    help="Cambia el nombre de esta mesa.",
+                    key=f"ren_mesa_{nombre_mesa}",
+                )
+                b1, b2, b3 = st.columns(3)
+                with b1:
+                    guardar = st.form_submit_button(
+                        "Guardar nombre",
+                        use_container_width=True,
+                        help=f"Guarda el nuevo nombre de «{nombre_mesa}».",
+                    )
+                with b2:
+                    vaciar = st.form_submit_button(
+                        "Vaciar mesa",
+                        use_container_width=True,
+                        help=(
+                            f"Quita todos los comensales y consumiciones de «{nombre_mesa}». "
+                            "La mesa sigue existiendo."
+                        ),
+                    )
+                with b3:
+                    borrar = st.form_submit_button(
+                        "Cerrar mesa",
+                        use_container_width=True,
+                        help=f"Elimina la mesa «{nombre_mesa}» por completo.",
+                    )
+
+                if guardar:
+                    error = renombrar_mesa(nombre_mesa, nuevo_nombre)
+                    if error:
+                        st.error(error)
+                    else:
+                        st.success(f"Mesa renombrada a «{nuevo_nombre.strip()}».")
+                        st.rerun()
+                if vaciar:
+                    vaciar_mesa(nombre_mesa)
+                    st.success(f"Mesa «{nombre_mesa}» vaciada.")
+                    st.rerun()
+                if borrar:
+                    eliminar_mesa(nombre_mesa)
+                    st.success(f"Mesa «{nombre_mesa}» cerrada.")
+                    st.rerun()
+
+
+# ============================================
 # PEDIDOS
 # ============================================
 def ui_personas() -> None | str:
-    st.subheader("Mesa")
-    st.caption("Añade clientes y selecciona quién está pidiendo.")
-
-    c1, c2 = st.columns([3, 1])
-    with c1:
-        nueva = st.text_input(
-            "Nombre del cliente",
-            placeholder="Ej: Juan",
-            help="Escribe el nombre de la persona que se sienta en la mesa.",
-            key="input_nueva_persona",
+    if not st.session_state.mesas:
+        st.subheader("Pedido")
+        st.info(
+            "Primero crea al menos una mesa en la pestaña **Mesas**. "
+            "Después podrás asignar comensales a cada mesa."
         )
-    with c2:
-        anadir = st.button(
-            "Añadir persona",
-            use_container_width=True,
-            type="primary",
-            help="Añade esta persona a la mesa para poder apuntarle consumiciones.",
-        )
-
-    if anadir:
-        nombre = (nueva or "").strip()
-        if not nombre:
-            st.warning("Escribe un nombre válido.")
-        elif nombre in st.session_state.pedidos:
-            st.warning(f"{nombre} ya está en la mesa.")
-        else:
-            st.session_state.pedidos[nombre] = {}
-            st.session_state.persona_activa = nombre
-            st.success(f"{nombre} añadido a la mesa.")
-            st.rerun()
-
-    nombres = list(st.session_state.pedidos.keys())
-    if not nombres:
-        st.info("Añade personas a la mesa para empezar a apuntar consumiciones.")
         return None
 
-    st.markdown("**Personas en la mesa** — pulsa un nombre para seleccionarlo:")
+    mesa = asegurar_mesa_activa()
+    nombres_mesas = list(st.session_state.mesas.keys())
+
+    st.subheader("Asignar comensales a mesas")
+    st.caption(
+        "Elige la mesa de destino y el nombre del comensal. "
+        "Cada persona solo puede estar en una mesa."
+    )
+
+    with st.container(border=True):
+        st.markdown("#### Nuevo comensal")
+        c_nombre, c_mesa, c_btn = st.columns([2, 2, 1])
+        with c_nombre:
+            nueva = st.text_input(
+                "Nombre del comensal",
+                placeholder="Ej: Juan",
+                help="Nombre de la persona que se sienta en la mesa elegida.",
+                key="input_nueva_persona",
+            )
+        with c_mesa:
+            idx_mesa = nombres_mesas.index(mesa) if mesa in nombres_mesas else 0
+            mesa_destino = st.selectbox(
+                "Mesa asignada",
+                options=nombres_mesas,
+                index=idx_mesa,
+                help="Mesa a la que se asignará este comensal.",
+                key="select_mesa_destino_comensal",
+            )
+        with c_btn:
+            st.markdown("<br>", unsafe_allow_html=True)
+            anadir = st.button(
+                "Asignar a mesa",
+                use_container_width=True,
+                type="primary",
+                help=f"Asigna el comensal a la mesa «{mesa_destino}».",
+            )
+
+        st.caption(f"Se asignará a: **{mesa_destino}**")
+
+        if anadir:
+            error, aviso = asignar_comensal_a_mesa(nueva, mesa_destino)
+            if error:
+                st.warning(error)
+            else:
+                st.success(aviso)
+                st.rerun()
+
+    st.markdown("#### Comensales por mesa")
+    hay_alguien = False
+    for nombre_mesa, datos in st.session_state.mesas.items():
+        comensales = list(datos["comensales"].keys())
+        if not comensales:
+            st.caption(f"**{nombre_mesa}**: (vacía)")
+            continue
+        hay_alguien = True
+        st.markdown(
+            f"**{nombre_mesa}** ({len(comensales)}): " + ", ".join(comensales)
+        )
+    if not hay_alguien:
+        st.info("Todavía no hay comensales asignados a ninguna mesa.")
+        return None
+
+    st.markdown("---")
+    st.markdown("#### ¿Quién pide ahora?")
+    mesa = asegurar_mesa_activa()
+    mesa_trabajo = st.selectbox(
+        "Mesa en la que estás apuntando",
+        options=nombres_mesas,
+        index=nombres_mesas.index(mesa) if mesa in nombres_mesas else 0,
+        help="Cambia de mesa para ver sus comensales y apuntar consumiciones.",
+        key="select_mesa_trabajo_pedido",
+    )
+    if mesa_trabajo != st.session_state.mesa_activa:
+        st.session_state.mesa_activa = mesa_trabajo
+        st.session_state.persona_activa = None
+        st.rerun()
+
+    mesa = mesa_trabajo
+    pedidos = comensales_de(mesa)
+    nombres = list(pedidos.keys())
+    if not nombres:
+        st.info(
+            f"«{mesa}» no tiene comensales. Asigna alguien arriba eligiendo "
+            f"mesa «{mesa}»."
+        )
+        return None
+
+    st.markdown(f"**Comensales en {mesa}** — pulsa un nombre para seleccionarlo:")
     cols = st.columns(min(len(nombres), 6))
     for i, nombre in enumerate(nombres):
         activa = st.session_state.persona_activa == nombre
         etiqueta = f"Seleccionada: {nombre}" if activa else nombre
         if cols[i % len(cols)].button(
             etiqueta,
-            key=f"sel_{nombre}",
+            key=f"sel_{mesa}_{nombre}",
             use_container_width=True,
             type="primary" if activa else "secondary",
             help=(
-                f"«{nombre}» ya está seleccionada. Las consumiciones se añaden a esta persona."
+                f"«{nombre}» (mesa «{mesa}») ya está seleccionada."
                 if activa
-                else f"Seleccionar a {nombre} para añadirle consumiciones."
+                else f"Seleccionar a {nombre} de la mesa «{mesa}»."
             ),
         ):
             st.session_state.persona_activa = nombre
             st.rerun()
 
-    if st.session_state.persona_activa not in st.session_state.pedidos:
+    if st.session_state.persona_activa not in pedidos:
         st.session_state.persona_activa = nombres[0]
 
     persona = st.session_state.persona_activa
+    st.success(f"**{persona}** pide en la mesa **{mesa}**")
 
-    c_del, _ = st.columns([1, 3])
-    if c_del.button(
-        f"Quitar a {persona} de la mesa",
-        use_container_width=True,
-        help=(
-            f"Elimina a {persona} y todas sus consumiciones de la mesa. "
-            "No se puede deshacer."
-        ),
-    ):
-        del st.session_state.pedidos[persona]
-        restantes = list(st.session_state.pedidos.keys())
-        st.session_state.persona_activa = restantes[0] if restantes else None
-        st.success(f"{persona} eliminado de la mesa.")
-        st.rerun()
+    otras = [m for m in nombres_mesas if m != mesa]
+    c_mover, c_del = st.columns(2)
+    with c_mover:
+        if otras:
+            mesa_nueva = st.selectbox(
+                f"Mover a {persona} a otra mesa",
+                options=["(elegir mesa)"] + otras,
+                help=f"Cambia a {persona} de mesa conservando sus consumiciones.",
+                key=f"mover_{mesa}_{persona}",
+            )
+            if mesa_nueva != "(elegir mesa)":
+                if st.button(
+                    f"Mover a {mesa_nueva}",
+                    use_container_width=True,
+                    help=f"Asigna a {persona} a «{mesa_nueva}».",
+                    key=f"btn_mover_{mesa}_{persona}",
+                ):
+                    error, aviso = asignar_comensal_a_mesa(persona, mesa_nueva)
+                    if error:
+                        st.warning(error)
+                    else:
+                        st.success(aviso)
+                        st.rerun()
+        else:
+            st.caption("Crea otra mesa para poder mover comensales.")
+
+    with c_del:
+        if st.button(
+            f"Quitar a {persona} de {mesa}",
+            use_container_width=True,
+            help=(
+                f"Elimina a {persona} y todas sus consumiciones de «{mesa}». "
+                "No se puede deshacer."
+            ),
+        ):
+            del pedidos[persona]
+            restantes = list(pedidos.keys())
+            st.session_state.persona_activa = restantes[0] if restantes else None
+            st.success(f"{persona} eliminado de «{mesa}».")
+            st.rerun()
 
     return persona
+
 
 
 def ui_resumen_pedido_actual(persona: str) -> None:
     """Muestra en vivo lo que lleva la persona seleccionada (sin ir al ticket)."""
     menu = st.session_state.menu
-    consumo = st.session_state.pedidos.get(persona, {})
+    mesa = st.session_state.mesa_activa
+    consumo = comensales_de(mesa).get(persona, {})
 
     with st.container(border=True):
-        st.markdown(f"**Pedido en curso de {persona}**")
+        st.markdown(f"**Pedido en curso de {persona}** · {mesa}")
 
         if not consumo:
             st.info(
@@ -639,7 +1003,7 @@ def ui_resumen_pedido_actual(persona: str) -> None:
             b_menos, b_cant, b_mas = c2.columns(3)
             if b_menos.button(
                 "−",
-                key=f"pedido_menos_{persona}_{producto}",
+                key=f"pedido_menos_{mesa}_{persona}_{producto}",
                 help=f"Quitar 1 unidad de «{producto}» del pedido de {persona}.",
             ):
                 ajustar_cantidad(persona, producto, -1)
@@ -650,7 +1014,7 @@ def ui_resumen_pedido_actual(persona: str) -> None:
             b_cant.markdown(f"**{cantidad}**")
             if b_mas.button(
                 "+",
-                key=f"pedido_mas_{persona}_{producto}",
+                key=f"pedido_mas_{mesa}_{persona}_{producto}",
                 help=f"Añadir 1 unidad más de «{producto}» a {persona}.",
             ):
                 ajustar_cantidad(persona, producto, 1)
@@ -662,10 +1026,10 @@ def ui_resumen_pedido_actual(persona: str) -> None:
             c3.write(f"{subtotal:.2f} €")
             if c4.button(
                 "Quitar",
-                key=f"pedido_del_{persona}_{producto}",
+                key=f"pedido_del_{mesa}_{persona}_{producto}",
                 help=f"Eliminar «{producto}» del pedido de {persona}.",
             ):
-                del st.session_state.pedidos[persona][producto]
+                del comensales_de(mesa)[persona][producto]
                 st.session_state.ultimo_aviso = (
                     f"Eliminado «{nombre_limpio(producto)}» del pedido de {persona}."
                 )
@@ -678,9 +1042,10 @@ def ui_resumen_pedido_actual(persona: str) -> None:
 
 def ui_anadir_consumiciones(persona: str) -> None:
     menu = st.session_state.menu
-    st.markdown(f"### Pedido de {persona}")
+    mesa = st.session_state.mesa_activa
+    st.markdown(f"### Pedido de {persona} · {mesa}")
     st.caption(
-        f"Pulsa un producto para sumar una unidad al pedido de {persona}. "
+        f"Pulsa un producto para sumar una unidad al pedido de {persona} en «{mesa}». "
         "Verás el resumen actualizado al instante debajo."
     )
 
@@ -696,7 +1061,7 @@ def ui_anadir_consumiciones(persona: str) -> None:
     n = len(menu)
     cols_por_fila = min(4, n)
     productos = list(menu.items())
-    consumo = st.session_state.pedidos.get(persona, {})
+    consumo = comensales_de(mesa).get(persona, {})
 
     for i in range(0, n, cols_por_fila):
         fila = productos[i : i + cols_por_fila]
@@ -710,17 +1075,17 @@ def ui_anadir_consumiciones(persona: str) -> None:
             with cols[j]:
                 if st.button(
                     etiqueta,
-                    key=f"add_{persona}_{producto}",
+                    key=f"add_{mesa}_{persona}_{producto}",
                     use_container_width=True,
                     help=(
                         f"Añadir 1 unidad de «{producto}» "
-                        f"({precio:.2f} euros) al pedido de {persona}."
+                        f"({precio:.2f} euros) al pedido de {persona} en «{mesa}»."
                     ),
                 ):
                     consumo[producto] = cantidad_actual + 1
                     st.session_state.ultimo_aviso = (
-                        f"Añadido: 1 × {nombre_limpio(producto)} a {persona}. "
-                        f"Ahora lleva {consumo[producto]}."
+                        f"Añadido: 1 × {nombre_limpio(producto)} a {persona} "
+                        f"(«{mesa}»). Ahora lleva {consumo[producto]}."
                     )
                     st.rerun()
 
@@ -729,7 +1094,8 @@ def ui_anadir_consumiciones(persona: str) -> None:
 
 
 def ajustar_cantidad(persona: str, producto: str, delta: int) -> None:
-    consumo = st.session_state.pedidos[persona]
+    mesa = st.session_state.mesa_activa
+    consumo = comensales_de(mesa)[persona]
     nueva = consumo.get(producto, 0) + delta
     if nueva <= 0:
         consumo.pop(producto, None)
@@ -739,18 +1105,26 @@ def ajustar_cantidad(persona: str, producto: str, delta: int) -> None:
 
 def ui_ticket() -> Decimal:
     menu = st.session_state.menu
+    mesa = asegurar_mesa_activa()
     st.subheader("Ticket de la mesa")
+
+    if not mesa:
+        st.info("No hay ninguna mesa seleccionada. Crea una en la pestaña Mesas.")
+        return Decimal("0.00")
+
     st.caption(
-        "Revisa cantidades e importes. Usa los botones para restar, sumar o eliminar líneas."
+        f"Ticket de **{mesa}**. Revisa cantidades e importes. "
+        "Usa los botones para restar, sumar o eliminar líneas."
     )
 
-    if not st.session_state.pedidos:
-        st.info("La mesa está vacía.")
+    pedidos = comensales_de(mesa)
+    if not pedidos:
+        st.info(f"«{mesa}» no tiene comensales todavía.")
         return Decimal("0.00")
 
     total_general = Decimal("0.00")
 
-    for persona, consumo in st.session_state.pedidos.items():
+    for persona, consumo in pedidos.items():
         total_persona = Decimal("0.00")
         with st.expander(f"Consumiciones de {persona}", expanded=True):
             if not consumo:
@@ -773,7 +1147,7 @@ def ui_ticket() -> Decimal:
                     b1, b2, b3 = c2.columns(3)
                     if b1.button(
                         "−",
-                        key=f"menos_{persona}_{producto}",
+                        key=f"menos_{mesa}_{persona}_{producto}",
                         help=(
                             f"Quitar 1 unidad de «{producto}» del pedido de {persona}. "
                             f"Cantidad actual: {cantidad}."
@@ -784,7 +1158,7 @@ def ui_ticket() -> Decimal:
                     b2.markdown(f"**{cantidad}**")
                     if b3.button(
                         "+",
-                        key=f"mas_{persona}_{producto}",
+                        key=f"mas_{mesa}_{persona}_{producto}",
                         help=(
                             f"Añadir 1 unidad de «{producto}» al pedido de {persona}. "
                             f"Cantidad actual: {cantidad}."
@@ -796,13 +1170,13 @@ def ui_ticket() -> Decimal:
                     c3.write(f"{subtotal:.2f} €")
                     if c4.button(
                         "Eliminar",
-                        key=f"del_all_{persona}_{producto}",
+                        key=f"del_all_{mesa}_{persona}_{producto}",
                         help=(
                             f"Eliminar todas las unidades de «{producto}» "
                             f"({cantidad}) del pedido de {persona}."
                         ),
                     ):
-                        del st.session_state.pedidos[persona][producto]
+                        del pedidos[persona][producto]
                         st.rerun()
 
                 st.markdown(f"**Total de {persona}: {total_persona:.2f} €**")
@@ -812,20 +1186,24 @@ def ui_ticket() -> Decimal:
 
 
 def ui_resumen_y_whatsapp(total_general: Decimal) -> None:
+    mesa = asegurar_mesa_activa()
+    pedidos = comensales_de(mesa) if mesa else {}
+
     st.markdown("---")
-    m1, m2, m3 = st.columns(3)
-    personas = len(st.session_state.pedidos)
-    items = sum(sum(c.values()) for c in st.session_state.pedidos.values())
-    m1.metric("Personas en la mesa", personas, help="Número de clientes en la mesa.")
-    m2.metric(
+    m1, m2, m3, m4 = st.columns(4)
+    personas = len(pedidos)
+    items = sum(sum(c.values()) for c in pedidos.values())
+    m1.metric("Mesa", mesa or "—", help="Mesa activa cuyo ticket se muestra.")
+    m2.metric("Comensales", personas, help="Número de personas en la mesa activa.")
+    m3.metric(
         "Consumiciones",
         items,
-        help="Suma de todas las unidades pedidas por toda la mesa.",
+        help="Suma de todas las unidades pedidas en esta mesa.",
     )
-    m3.metric(
-        "Total de la mesa",
+    m4.metric(
+        "Total mesa",
         f"{total_general:.2f} €",
-        help="Importe total a pagar por toda la mesa.",
+        help="Importe total a pagar por esta mesa.",
     )
 
     if total_general > 0:
@@ -844,24 +1222,25 @@ def ui_resumen_y_whatsapp(total_general: Decimal) -> None:
             "Puedes fijar el número en la barra lateral → **WhatsApp del bar**."
         )
 
-    hay_pedidos = any(st.session_state.pedidos.values())
-    if not hay_pedidos:
-        st.info("Añade consumiciones para poder compartir la cuenta.")
+    hay_pedidos = any(pedidos.values())
+    if not mesa or not hay_pedidos:
+        st.info("Añade consumiciones en la mesa activa para poder compartir la cuenta.")
         return
 
     mensaje = generar_mensaje_whatsapp(
-        st.session_state.pedidos,
+        pedidos,
         st.session_state.menu,
         nombre_del_bar(),
+        mesa,
     )
     with st.expander("Vista previa del mensaje de WhatsApp", expanded=False):
         st.code(mensaje, language=None)
 
     enlace = crear_enlace_whatsapp(mensaje, telefono)
     etiqueta = (
-        f"Enviar cuenta por WhatsApp a +{telefono}"
+        f"Enviar cuenta de {mesa} por WhatsApp a +{telefono}"
         if telefono
-        else "Abrir WhatsApp con la cuenta"
+        else f"Abrir WhatsApp con la cuenta de {mesa}"
     )
     st.link_button(
         etiqueta,
@@ -869,9 +1248,9 @@ def ui_resumen_y_whatsapp(total_general: Decimal) -> None:
         use_container_width=True,
         type="primary",
         help=(
-            f"Abre el chat de WhatsApp con +{telefono} y el resumen de la cuenta."
+            f"Abre el chat de WhatsApp con +{telefono} y el resumen de «{mesa}»."
             if telefono
-            else "Abre WhatsApp con el resumen de la cuenta listo para elegir contacto."
+            else f"Abre WhatsApp con el resumen de «{mesa}» listo para elegir contacto."
         ),
     )
 
@@ -886,7 +1265,7 @@ with st.sidebar:
     if logo:
         st.image(str(logo), use_container_width=True)
     st.title(nombre_del_bar())
-    st.caption("Gestiona mesa, menú, marca y precios.")
+    st.caption("Gestiona mesas, comensales, menú, marca y precios.")
 
     with st.expander("Marca del bar", expanded=False):
         st.caption("Nombre e imagen que se muestran en la app y en el mensaje de WhatsApp.")
@@ -957,7 +1336,7 @@ with st.sidebar:
 - Al enfocar o pasar el ratón por un botón verás **qué hace**.
 - Los botones tienen **texto** (no solo iconos).
 - Los avisos de éxito o error aparecen **por escrito** en pantalla.
-- Las pestañas son: Pedido, Ticket y Menú.
+- Las pestañas son: Mesas, Pedido, Ticket y Menú.
             """
         )
 
@@ -1010,6 +1389,18 @@ with st.sidebar:
 
     st.markdown("---")
 
+    mesa_act = asegurar_mesa_activa()
+    st.markdown("**Mesas**")
+    if not st.session_state.mesas:
+        st.caption("Sin mesas. Créalas en la pestaña Mesas.")
+    else:
+        for nombre_mesa, datos in st.session_state.mesas.items():
+            n = len(datos["comensales"])
+            marca = "→ " if nombre_mesa == mesa_act else ""
+            st.markdown(f"- {marca}**{nombre_mesa}**: {n} comensal(es)")
+        if mesa_act:
+            st.caption(f"Activa: **{mesa_act}**")
+
     menu = st.session_state.menu
     if menu:
         st.markdown("**Menú rápido**")
@@ -1020,13 +1411,23 @@ with st.sidebar:
 
     st.markdown("---")
     if st.button(
-        "Vaciar cuenta de la mesa",
+        "Vaciar mesa activa",
         use_container_width=True,
-        help="Borra todas las personas y consumiciones de la mesa. El menú no se modifica.",
+        help="Quita comensales y consumiciones de la mesa seleccionada. La mesa sigue existiendo.",
+        disabled=not mesa_act,
     ):
-        st.session_state.pedidos = {}
+        vaciar_mesa(mesa_act)
+        st.success(f"Mesa «{mesa_act}» vaciada.")
+        st.rerun()
+    if st.button(
+        "Cerrar todas las mesas",
+        use_container_width=True,
+        help="Elimina todas las mesas y sus cuentas. El menú no se modifica.",
+    ):
+        st.session_state.mesas = {}
+        st.session_state.mesa_activa = None
         st.session_state.persona_activa = None
-        st.success("Cuenta de la mesa vaciada.")
+        st.success("Todas las mesas han sido cerradas.")
         st.rerun()
 
 # Cabecera principal con marca
@@ -1038,20 +1439,22 @@ if logo_principal:
     with col_titulo:
         st.markdown(f"## {nombre_del_bar()}")
         st.caption(
-            "Navegación: Pedido para apuntar, Ticket para revisar importes, "
-            "Menú para productos, y barra lateral para marca y WhatsApp."
+            "Navegación: Mesas → Pedido → Ticket. "
+            "Menú para productos; barra lateral para marca y WhatsApp."
         )
 else:
     st.markdown(f"## {nombre_del_bar()}")
     st.caption(
-        "Navegación principal: elige Pedido para apuntar, Ticket para revisar importes, "
-        "o Menú para crear, editar y borrar productos. "
+        "Empieza por la pestaña Mesas, luego Pedido y Ticket. "
         "Configura nombre e imagen en la barra lateral → Marca del bar."
     )
 
-tab_pedido, tab_ticket, tab_menu = st.tabs(
-    ["Pedido", "Ticket", "Menú (crear, editar, borrar)"]
+tab_mesas, tab_pedido, tab_ticket, tab_menu = st.tabs(
+    ["Mesas", "Pedido", "Ticket", "Menú (crear, editar, borrar)"]
 )
+
+with tab_mesas:
+    ui_gestion_mesas()
 
 with tab_pedido:
     persona = ui_personas()
@@ -1068,5 +1471,5 @@ with tab_menu:
 
 st.caption(
     "Python + Streamlit · Precios con Decimal · Menú persistente en JSON · "
-    "Interfaz pensada para teclado, tooltips y lectores de pantalla."
+    "Mesas con comensales · Interfaz pensada para teclado, tooltips y lectores de pantalla."
 )
