@@ -17,6 +17,17 @@ st.set_page_config(
 )
 
 MENU_FILE = Path(__file__).with_name("menu_bar.json")
+CONFIG_FILE = Path(__file__).with_name("config_bar.json")
+MARCA_DIR = Path(__file__).with_name("assets")
+MARCA_FILE = MARCA_DIR / "marca_bar"
+
+CONFIG_DEFAULT = {
+    "whatsapp_telefono": "",  # Prefijo país + número, sin + ni espacios. Ej: 34612345678
+    "nombre_bar": "Cuenta del Bar",
+    "imagen_marca": "",  # Nombre de archivo dentro de assets/, vacío si no hay
+}
+
+EXTENSIONES_IMAGEN = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
 MENU_DEFAULT = {
     "🍺 Caña": "1.90",
@@ -24,6 +35,41 @@ MENU_DEFAULT = {
     "💧 Agua": "1.00",
     "🥔 Pincho tortilla": "3.50",
 }
+
+# Iconos seleccionables para productos del menú
+ICONO_NINGUNO = "(Sin icono)"
+ICONOS_PRODUCTO = [
+    ICONO_NINGUNO,
+    "🍺",  # Caña / cerveza de barril
+    "🍻",  # Cervezas
+    "🥂",  # Copas
+    "🍷",  # Vino
+    "🍸",  # Cóctel
+    "🍹",  # Combinado
+    "🥃",  # Cubata / whisky
+    "🍾",  # Cava / champán
+    "🧃",  # Zumo
+    "🥤",  # Refresco
+    "💧",  # Agua
+    "☕",  # Café
+    "🍵",  # Té
+    "🥛",  # Leche
+    "🥔",  # Tortilla / tapa
+    "🥪",  # Bocadillo
+    "🍔",  # Hamburguesa
+    "🍕",  # Pizza
+    "🌮",  # Taco
+    "🥗",  # Ensalada
+    "🍝",  # Pasta
+    "🍖",  # Carne
+    "🍤",  # Marisco
+    "🧀",  # Queso
+    "🍫",  # Postre
+    "🍦",  # Helado
+    "🍰",  # Tarta
+    "🍪",  # Galleta
+    "🥜",  # Frutos secos
+]
 
 # Estilos ligeros para una UX más clara
 st.markdown(
@@ -53,7 +99,7 @@ st.markdown(
 
 
 # ============================================
-# PERSISTENCIA DEL MENÚ
+# PERSISTENCIA DEL MENÚ Y CONFIGURACIÓN
 # ============================================
 def cargar_menu() -> dict[str, Decimal]:
     if MENU_FILE.exists():
@@ -73,9 +119,89 @@ def guardar_menu(menu: dict[str, Decimal]) -> None:
     )
 
 
+def cargar_config() -> dict:
+    config = dict(CONFIG_DEFAULT)
+    if CONFIG_FILE.exists():
+        try:
+            raw = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                for clave, valor_def in CONFIG_DEFAULT.items():
+                    if clave in raw and raw[clave] is not None:
+                        config[clave] = raw[clave]
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+    config["whatsapp_telefono"] = normalizar_telefono(
+        str(config.get("whatsapp_telefono", ""))
+    )
+    config["nombre_bar"] = str(config.get("nombre_bar") or CONFIG_DEFAULT["nombre_bar"]).strip()
+    if not config["nombre_bar"]:
+        config["nombre_bar"] = CONFIG_DEFAULT["nombre_bar"]
+    config["imagen_marca"] = str(config.get("imagen_marca") or "").strip()
+    # Si el archivo ya no existe, limpiar la referencia
+    if config["imagen_marca"] and not (MARCA_DIR / config["imagen_marca"]).exists():
+        config["imagen_marca"] = ""
+    return config
+
+
+def guardar_config(config: dict) -> None:
+    payload = {
+        "whatsapp_telefono": normalizar_telefono(
+            str(config.get("whatsapp_telefono", ""))
+        ),
+        "nombre_bar": str(
+            config.get("nombre_bar") or CONFIG_DEFAULT["nombre_bar"]
+        ).strip()
+        or CONFIG_DEFAULT["nombre_bar"],
+        "imagen_marca": str(config.get("imagen_marca") or "").strip(),
+    }
+    CONFIG_FILE.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def normalizar_telefono(valor: str) -> str:
+    """Deja solo dígitos (código de país + número). Quita +, espacios y guiones."""
+    digitos = re.sub(r"\D", "", valor or "")
+    if digitos.startswith("00"):
+        digitos = digitos[2:]
+    return digitos
+
+
+def ruta_imagen_marca(config: dict | None = None) -> Path | None:
+    cfg = config if config is not None else st.session_state.get("config", {})
+    nombre = str((cfg or {}).get("imagen_marca") or "").strip()
+    if not nombre:
+        return None
+    ruta = MARCA_DIR / nombre
+    return ruta if ruta.exists() else None
+
+
+def guardar_imagen_marca(archivo) -> str:
+    """Guarda la imagen subida en assets/ y devuelve el nombre de archivo."""
+    MARCA_DIR.mkdir(parents=True, exist_ok=True)
+    extension = Path(archivo.name).suffix.lower()
+    if extension not in EXTENSIONES_IMAGEN:
+        raise ValueError("Formato no válido. Usa PNG, JPG, WEBP o GIF.")
+    # Borrar marcas anteriores
+    for viejo in MARCA_DIR.glob("marca_bar.*"):
+        viejo.unlink(missing_ok=True)
+    destino = MARCA_DIR / f"marca_bar{extension}"
+    destino.write_bytes(archivo.getvalue())
+    return destino.name
+
+
+def eliminar_imagen_marca() -> None:
+    if MARCA_DIR.exists():
+        for viejo in MARCA_DIR.glob("marca_bar.*"):
+            viejo.unlink(missing_ok=True)
+
+
 def init_state() -> None:
     if "menu" not in st.session_state:
         st.session_state.menu = cargar_menu()
+    if "config" not in st.session_state:
+        st.session_state.config = cargar_config()
     if "pedidos" not in st.session_state:
         st.session_state.pedidos = {}
     if "persona_activa" not in st.session_state:
@@ -87,6 +213,32 @@ def init_state() -> None:
 def set_menu(menu: dict[str, Decimal]) -> None:
     st.session_state.menu = menu
     guardar_menu(menu)
+
+
+def set_config(cambios: dict) -> None:
+    """Actualiza la configuración fusionando con la actual y persistiendo."""
+    actual = dict(st.session_state.config)
+    actual.update(cambios)
+    actual["whatsapp_telefono"] = normalizar_telefono(
+        str(actual.get("whatsapp_telefono", ""))
+    )
+    actual["nombre_bar"] = (
+        str(actual.get("nombre_bar") or CONFIG_DEFAULT["nombre_bar"]).strip()
+        or CONFIG_DEFAULT["nombre_bar"]
+    )
+    actual["imagen_marca"] = str(actual.get("imagen_marca") or "").strip()
+    st.session_state.config = {
+        "whatsapp_telefono": actual["whatsapp_telefono"],
+        "nombre_bar": actual["nombre_bar"],
+        "imagen_marca": actual["imagen_marca"],
+    }
+    guardar_config(st.session_state.config)
+
+
+def nombre_del_bar() -> str:
+    return str(
+        st.session_state.config.get("nombre_bar") or CONFIG_DEFAULT["nombre_bar"]
+    )
 
 
 def renombrar_producto_en_pedidos(antiguo: str, nuevo: str) -> None:
@@ -124,9 +276,42 @@ def nombre_limpio(producto: str) -> str:
     return " ".join(limpio.split())
 
 
-def generar_mensaje_whatsapp(pedidos: dict, menu: dict[str, Decimal]) -> str:
+def separar_icono_nombre(producto: str) -> tuple[str, str]:
+    """Separa el icono inicial del nombre de texto."""
+    nombre = nombre_limpio(producto)
+    icono = producto.replace(nombre, "", 1).strip() if nombre else producto.strip()
+    # Si el icono no está en la lista, lo añadimos visualmente al selector
+    if not icono:
+        icono = ICONO_NINGUNO
+    return icono, nombre
+
+
+def componer_producto(icono: str, nombre: str) -> str:
+    """Une icono + nombre para la clave visible del menú."""
+    nombre_ok = " ".join(nombre.strip().split())
+    if not nombre_ok:
+        return ""
+    if not icono or icono == ICONO_NINGUNO:
+        return nombre_ok
+    return f"{icono} {nombre_ok}"
+
+
+def opciones_icono(icono_actual: str | None = None) -> list[str]:
+    """Lista de iconos; incluye el actual si no estaba en el catálogo."""
+    opciones = list(ICONOS_PRODUCTO)
+    if icono_actual and icono_actual not in opciones and icono_actual != ICONO_NINGUNO:
+        opciones.insert(1, icono_actual)
+    return opciones
+
+
+def generar_mensaje_whatsapp(
+    pedidos: dict,
+    menu: dict[str, Decimal],
+    nombre_bar: str = "",
+) -> str:
     """Mensaje en texto plano (sin emojis) para que WhatsApp no muestre caracteres rotos."""
-    lineas = ["*CUENTA DEL BAR*", ""]
+    titulo = (nombre_bar or "Cuenta del Bar").strip()
+    lineas = [f"*{titulo}*", "*CUENTA*", ""]
     total_general = Decimal("0.00")
 
     for persona, consumo in pedidos.items():
@@ -155,9 +340,12 @@ def generar_mensaje_whatsapp(pedidos: dict, menu: dict[str, Decimal]) -> str:
     return "\n".join(lineas)
 
 
-def crear_enlace_whatsapp(mensaje: str) -> str:
-    """Codifica el mensaje en UTF-8 para el enlace de compartir de WhatsApp."""
+def crear_enlace_whatsapp(mensaje: str, telefono: str = "") -> str:
+    """Codifica el mensaje; si hay teléfono, abre el chat directo con ese número."""
     texto = urllib.parse.quote(mensaje, safe="", encoding="utf-8")
+    telefono_ok = normalizar_telefono(telefono)
+    if telefono_ok:
+        return f"https://api.whatsapp.com/send?phone={telefono_ok}&text={texto}"
     return f"https://api.whatsapp.com/send?text={texto}"
 
 
@@ -170,18 +358,24 @@ def ui_crud_menu() -> None:
     st.subheader("Gestión del menú")
     st.caption(
         "Crea, edita o elimina productos y precios. "
-        "Los cambios se guardan automáticamente. "
+        "Elige un icono de la lista para cada producto. "
         "Pasa el ratón o enfoca con Tab para ver la descripción de cada botón."
     )
 
     # --- CREAR ---
     with st.expander("Añadir producto nuevo", expanded=not menu):
         with st.form("form_nuevo_producto", clear_on_submit=True):
-            c1, c2 = st.columns([2, 1])
+            c0, c1, c2 = st.columns([1, 2, 1])
+            icono = c0.selectbox(
+                "Icono",
+                options=opciones_icono(),
+                index=1,  # 🍺 por defecto
+                help="Icono que se muestra junto al nombre del producto.",
+            )
             nombre = c1.text_input(
                 "Nombre del producto",
                 placeholder="Ej: Vino tinto",
-                help="Nombre visible en el menú y en el ticket.",
+                help="Nombre del producto, sin emoji. El icono se elige a la izquierda.",
             )
             precio = c2.number_input(
                 "Precio en euros",
@@ -191,22 +385,30 @@ def ui_crud_menu() -> None:
                 format="%.2f",
                 help="Precio unitario del producto en euros.",
             )
+            vista_previa = componer_producto(icono, nombre or "…")
+            st.caption(f"Vista previa: **{vista_previa}**")
+
             if st.form_submit_button(
                 "Guardar producto",
                 use_container_width=True,
                 type="primary",
-                help="Añade este producto al menú con el precio indicado.",
+                help="Añade este producto al menú con el icono y el precio indicados.",
             ):
-                nombre_ok = nombre.strip()
-                if not nombre_ok:
+                clave = componer_producto(icono, nombre)
+                if not clave:
                     st.error("El nombre no puede estar vacío.")
-                elif nombre_ok in menu:
-                    st.error(f"«{nombre_ok}» ya existe en el menú.")
+                elif clave in menu:
+                    st.error(f"«{clave}» ya existe en el menú.")
+                elif any(nombre_limpio(p).casefold() == nombre_limpio(clave).casefold() for p in menu):
+                    st.error(
+                        f"Ya existe un producto llamado «{nombre_limpio(clave)}» "
+                        "(aunque tenga otro icono)."
+                    )
                 else:
                     nuevo = dict(menu)
-                    nuevo[nombre_ok] = Decimal(f"{precio:.2f}")
+                    nuevo[clave] = Decimal(f"{precio:.2f}")
                     set_menu(nuevo)
-                    st.success(f"Producto añadido: {nombre_ok} a {precio:.2f} euros.")
+                    st.success(f"Producto añadido: {clave} a {precio:.2f} euros.")
                     st.rerun()
 
     if not menu:
@@ -218,18 +420,28 @@ def ui_crud_menu() -> None:
 
     # --- LEER / ACTUALIZAR / ELIMINAR ---
     for producto, precio in list(menu.items()):
+        icono_actual, nombre_actual = separar_icono_nombre(producto)
         with st.container(border=True):
             st.markdown(f"**Producto:** {producto} — **Precio actual:** {precio:.2f} €")
             with st.form(f"form_edit_{producto}"):
-                e1, e2 = st.columns([2, 1])
+                e0, e1, e2 = st.columns([1, 2, 1])
+                opciones = opciones_icono(icono_actual)
+                idx = opciones.index(icono_actual) if icono_actual in opciones else 0
+                nuevo_icono = e0.selectbox(
+                    f"Icono de {nombre_actual or producto}",
+                    options=opciones,
+                    index=idx,
+                    help=f"Cambia el icono de «{producto}».",
+                    key=f"ico_{producto}",
+                )
                 nuevo_nombre = e1.text_input(
-                    f"Nuevo nombre para {producto}",
-                    value=producto,
-                    help=f"Cambia el nombre del producto «{producto}».",
+                    f"Nombre de {nombre_actual or producto}",
+                    value=nombre_actual,
+                    help="Nombre sin emoji. El icono se elige a la izquierda.",
                     key=f"nom_{producto}",
                 )
                 nuevo_precio = e2.number_input(
-                    f"Nuevo precio de {producto} (€)",
+                    f"Precio de {nombre_actual or producto} (€)",
                     min_value=0.0,
                     value=float(precio),
                     step=0.10,
@@ -237,6 +449,10 @@ def ui_crud_menu() -> None:
                     help=f"Cambia el precio de «{producto}» en euros.",
                     key=f"pre_{producto}",
                 )
+                st.caption(
+                    f"Vista previa: **{componer_producto(nuevo_icono, nuevo_nombre or '…')}**"
+                )
+
                 b1, b2 = st.columns(2)
                 with b1:
                     guardar = st.form_submit_button(
@@ -244,8 +460,8 @@ def ui_crud_menu() -> None:
                         use_container_width=True,
                         type="primary",
                         help=(
-                            f"Guarda el nombre y el precio nuevos de «{producto}». "
-                            "Si renombras, los pedidos de la mesa se actualizan."
+                            f"Guarda el icono, el nombre y el precio de «{producto}». "
+                            "Si cambian, los pedidos de la mesa se actualizan."
                         ),
                     )
                 with b2:
@@ -259,20 +475,28 @@ def ui_crud_menu() -> None:
                     )
 
                 if guardar:
-                    nombre_ok = nuevo_nombre.strip()
-                    if not nombre_ok:
+                    clave = componer_producto(nuevo_icono, nuevo_nombre)
+                    if not clave:
                         st.error("El nombre no puede estar vacío.")
-                    elif nombre_ok != producto and nombre_ok in menu:
-                        st.error(f"Ya existe «{nombre_ok}».")
+                    elif clave != producto and clave in menu:
+                        st.error(f"Ya existe «{clave}».")
+                    elif any(
+                        p != producto
+                        and nombre_limpio(p).casefold() == nombre_limpio(clave).casefold()
+                        for p in menu
+                    ):
+                        st.error(
+                            f"Ya existe un producto llamado «{nombre_limpio(clave)}»."
+                        )
                     else:
                         actualizado = dict(menu)
                         del actualizado[producto]
-                        actualizado[nombre_ok] = Decimal(f"{nuevo_precio:.2f}")
-                        if nombre_ok != producto:
-                            renombrar_producto_en_pedidos(producto, nombre_ok)
+                        actualizado[clave] = Decimal(f"{nuevo_precio:.2f}")
+                        if clave != producto:
+                            renombrar_producto_en_pedidos(producto, clave)
                         set_menu(actualizado)
                         st.success(
-                            f"Producto actualizado: {nombre_ok} a {nuevo_precio:.2f} euros."
+                            f"Producto actualizado: {clave} a {nuevo_precio:.2f} euros."
                         )
                         st.rerun()
 
@@ -610,22 +834,45 @@ def ui_resumen_y_whatsapp(total_general: Decimal) -> None:
     st.markdown("---")
     st.subheader("Compartir por WhatsApp")
 
+    telefono = st.session_state.config.get("whatsapp_telefono", "")
+    if telefono:
+        st.caption(f"Destino configurado: **+{telefono}** (barra lateral → WhatsApp del bar).")
+    else:
+        st.info(
+            "No hay número del bar configurado. "
+            "Se abrirá WhatsApp para que elijas el contacto. "
+            "Puedes fijar el número en la barra lateral → **WhatsApp del bar**."
+        )
+
     hay_pedidos = any(st.session_state.pedidos.values())
     if not hay_pedidos:
         st.info("Añade consumiciones para poder compartir la cuenta.")
         return
 
-    mensaje = generar_mensaje_whatsapp(st.session_state.pedidos, st.session_state.menu)
+    mensaje = generar_mensaje_whatsapp(
+        st.session_state.pedidos,
+        st.session_state.menu,
+        nombre_del_bar(),
+    )
     with st.expander("Vista previa del mensaje de WhatsApp", expanded=False):
         st.code(mensaje, language=None)
 
-    enlace = crear_enlace_whatsapp(mensaje)
+    enlace = crear_enlace_whatsapp(mensaje, telefono)
+    etiqueta = (
+        f"Enviar cuenta por WhatsApp a +{telefono}"
+        if telefono
+        else "Abrir WhatsApp con la cuenta"
+    )
     st.link_button(
-        "Abrir WhatsApp con la cuenta",
+        etiqueta,
         enlace,
         use_container_width=True,
         type="primary",
-        help="Abre WhatsApp con el resumen de la cuenta listo para enviar.",
+        help=(
+            f"Abre el chat de WhatsApp con +{telefono} y el resumen de la cuenta."
+            if telefono
+            else "Abre WhatsApp con el resumen de la cuenta listo para elegir contacto."
+        ),
     )
 
 
@@ -635,8 +882,74 @@ def ui_resumen_y_whatsapp(total_general: Decimal) -> None:
 init_state()
 
 with st.sidebar:
-    st.title("Cuenta del Bar")
-    st.caption("Gestiona mesa, menú y precios.")
+    logo = ruta_imagen_marca()
+    if logo:
+        st.image(str(logo), use_container_width=True)
+    st.title(nombre_del_bar())
+    st.caption("Gestiona mesa, menú, marca y precios.")
+
+    with st.expander("Marca del bar", expanded=False):
+        st.caption("Nombre e imagen que se muestran en la app y en el mensaje de WhatsApp.")
+        nombre_input = st.text_input(
+            "Nombre del bar",
+            value=nombre_del_bar(),
+            placeholder="Ej: Bar El Rincón",
+            help="Nombre comercial visible en la cabecera y en la cuenta de WhatsApp.",
+            key="input_nombre_bar",
+        )
+        if st.button(
+            "Guardar nombre",
+            use_container_width=True,
+            type="primary",
+            help="Guarda el nombre del bar.",
+            key="btn_guardar_nombre_bar",
+        ):
+            nombre_ok = nombre_input.strip()
+            if not nombre_ok:
+                st.error("El nombre del bar no puede estar vacío.")
+            else:
+                set_config({"nombre_bar": nombre_ok})
+                st.success(f"Nombre guardado: {nombre_ok}")
+                st.rerun()
+
+        st.markdown("---")
+        st.markdown("**Imagen de marca**")
+        if logo:
+            st.image(str(logo), caption="Imagen actual", use_container_width=True)
+        archivo = st.file_uploader(
+            "Subir logo o imagen",
+            type=["png", "jpg", "jpeg", "webp", "gif"],
+            help="PNG, JPG, WEBP o GIF. Sustituye la imagen anterior si ya había una.",
+            key="uploader_marca",
+        )
+        c_img1, c_img2 = st.columns(2)
+        with c_img1:
+            if st.button(
+                "Guardar imagen",
+                use_container_width=True,
+                type="primary",
+                help="Guarda la imagen seleccionada como marca del bar.",
+                disabled=archivo is None,
+            ):
+                try:
+                    nombre_archivo = guardar_imagen_marca(archivo)
+                    set_config({"imagen_marca": nombre_archivo})
+                    st.success("Imagen de marca guardada.")
+                    st.rerun()
+                except ValueError as err:
+                    st.error(str(err))
+        with c_img2:
+            if st.button(
+                "Quitar imagen",
+                use_container_width=True,
+                help="Elimina la imagen de marca guardada.",
+                disabled=logo is None,
+            ):
+                eliminar_imagen_marca()
+                set_config({"imagen_marca": ""})
+                st.success("Imagen de marca eliminada.")
+                st.rerun()
+
     with st.expander("Ayuda de accesibilidad", expanded=False):
         st.markdown(
             """
@@ -647,6 +960,54 @@ with st.sidebar:
 - Las pestañas son: Pedido, Ticket y Menú.
             """
         )
+
+    with st.expander("WhatsApp del bar", expanded=False):
+        st.caption(
+            "Número con prefijo de país, sin + ni espacios. "
+            "España: 34 + móvil (ej. 34612345678)."
+        )
+        telefono_actual = st.session_state.config.get("whatsapp_telefono", "")
+        telefono_input = st.text_input(
+            "Teléfono WhatsApp",
+            value=telefono_actual,
+            placeholder="34612345678",
+            help=(
+                "Chat al que se enviará la cuenta. "
+                "Déjalo vacío para elegir el contacto manualmente cada vez."
+            ),
+            key="input_whatsapp_telefono",
+        )
+        c_guardar, c_borrar = st.columns(2)
+        with c_guardar:
+            if st.button(
+                "Guardar número",
+                use_container_width=True,
+                type="primary",
+                help="Guarda el número de WhatsApp del bar.",
+            ):
+                telefono_ok = normalizar_telefono(telefono_input)
+                if telefono_input.strip() and len(telefono_ok) < 8:
+                    st.error("El número parece demasiado corto. Incluye el prefijo del país.")
+                else:
+                    set_config({"whatsapp_telefono": telefono_ok})
+                    if telefono_ok:
+                        st.success(f"WhatsApp del bar guardado: +{telefono_ok}")
+                    else:
+                        st.success("Número borrado. Se elegirá el contacto al enviar.")
+                    st.rerun()
+        with c_borrar:
+            if st.button(
+                "Quitar número",
+                use_container_width=True,
+                help="Elimina el número guardado.",
+                disabled=not telefono_actual,
+            ):
+                set_config({"whatsapp_telefono": ""})
+                st.success("Número de WhatsApp eliminado.")
+                st.rerun()
+        if telefono_actual:
+            st.caption(f"Activo: **+{telefono_actual}**")
+
     st.markdown("---")
 
     menu = st.session_state.menu
@@ -668,11 +1029,25 @@ with st.sidebar:
         st.success("Cuenta de la mesa vaciada.")
         st.rerun()
 
-st.markdown("## Cuenta del Bar")
-st.caption(
-    "Navegación principal: elige Pedido para apuntar, Ticket para revisar importes, "
-    "o Menú para crear, editar y borrar productos."
-)
+# Cabecera principal con marca
+logo_principal = ruta_imagen_marca()
+if logo_principal:
+    col_logo, col_titulo = st.columns([1, 4])
+    with col_logo:
+        st.image(str(logo_principal), use_container_width=True)
+    with col_titulo:
+        st.markdown(f"## {nombre_del_bar()}")
+        st.caption(
+            "Navegación: Pedido para apuntar, Ticket para revisar importes, "
+            "Menú para productos, y barra lateral para marca y WhatsApp."
+        )
+else:
+    st.markdown(f"## {nombre_del_bar()}")
+    st.caption(
+        "Navegación principal: elige Pedido para apuntar, Ticket para revisar importes, "
+        "o Menú para crear, editar y borrar productos. "
+        "Configura nombre e imagen en la barra lateral → Marca del bar."
+    )
 
 tab_pedido, tab_ticket, tab_menu = st.tabs(
     ["Pedido", "Ticket", "Menú (crear, editar, borrar)"]

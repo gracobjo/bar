@@ -6,6 +6,8 @@ __pycache__/
 .claude/
 .streamlit/secrets.toml
 menu_bar.json
+config_bar.json
+assets/
 *.xlsx
 .DS_Store
 Thumbs.db
