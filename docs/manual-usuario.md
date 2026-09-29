@@ -1,8 +1,8 @@
 # Manual de usuario
 
-Cuenta del Bar sirve para apuntar pedidos de varias mesas a la vez, saber quién los registró y sacar la cuenta por WhatsApp o en un ticket PDF.
+Cuenta del Bar sirve para apuntar pedidos de varias mesas a la vez, saber quién los registró, sacar la cuenta por WhatsApp o en un ticket PDF, y ver los indicadores del local si entras como administrador.
 
-Varios móviles pueden usar la misma aplicación. Las mesas y el menú se comparten. Cada teléfono elige su barman.
+Varios móviles pueden usar la misma aplicación. Las mesas y el menú se comparten. Cada teléfono elige su barman. El panel de indicadores solo aparece en el teléfono donde se ha escrito el PIN.
 
 ## 1. Arrancar la aplicación
 
@@ -60,11 +60,28 @@ Pulsa **Guardar datos fiscales**.
 
 Los precios del menú ya llevan el IVA incluido. Con IVA 0 % el ticket imprime «IVA incluido en los precios» y no desglosa cuota.
 
-### 2.5 Menú
+### 2.5 Administrador
+
+El administrador no es un barman. El PIN solo abre la pestaña **Panel** en ese teléfono. Pedidos, mesas y tickets siguen igual sin entrar.
+
+Si todavía no hay PIN, el bloque **Administrador** de la barra lateral pide uno de al menos 4 caracteres. Pulsa **Crear administrador**. El usuario queda como `administrador`.
+
+Si el PIN ya existe:
+
+1. Abre **Administrador** en la barra lateral.
+2. Comprueba el usuario que se muestra.
+3. Escribe el PIN y pulsa **Entrar**.
+4. Aparece la pestaña **Panel**.
+5. **Salir del panel** cierra el panel en ese teléfono. No borra el PIN.
+
+El PIN se cambia dentro del panel, en **Acceso de administrador**. No está en el código ni en el repositorio: solo en `config_bar.json` de ese ordenador. Quien abre la dirección de la app puede seguir trabajando como barman; no ve los indicadores hasta entrar.
+
+### 2.6 Menú
 
 Pestaña **Menú (crear, editar, borrar)**.
 
-- Alta: icono, nombre y precio en euros. **Guardar producto**.
+- Alta: icono, nombre, precio de venta y coste en euros. **Guardar producto**.
+- El coste es lo que te cuesta producir esa unidad. **0 €** significa que aún no lo sabes: el panel no lo usa para el coste de producto ni para el margen.
 - Cambio: edita la ficha del producto y pulsa **Guardar cambios**.
 - Baja: **Eliminar producto**. También desaparece de las mesas abiertas.
 - **Restaurar menú por defecto** vuelve a caña, cerveza, agua y pincho de tortilla.
@@ -77,9 +94,10 @@ Orden habitual: identificarse, mesas, pedido, ticket.
 
 Pestaña **Mesas**.
 
-- **Crear mesa**: por ejemplo `Mesa 1`, `Terraza A` o `Barra`.
+- **Crear mesa**: nombre, zona y asientos. La zona es **Barra**, **Mesas** o **Terraza**. Los asientos empiezan en 4. Sirven para el ticket medio por zona y para el RevPASH del panel.
+- Si una mesa antigua no tiene zona, el nombre decide: si contiene «barra» es barra, si contiene «terraza» es terraza, y el resto queda en mesas.
 - **Seleccionar**: esa pasa a ser la mesa activa.
-- **Renombrar**: cambia el nombre y conserva comensales e historial.
+- **Renombrar**: cambia el nombre y conserva comensales e historial. En el mismo formulario se guardan la zona y los asientos.
 - **Vaciar mesa**: quita comensales y consumiciones. La mesa sigue abierta. Si había un ticket fiscal de esa cuenta, se olvida para poder emitir otro cuando haya un pedido nuevo.
 - **Cerrar mesa**: elimina la mesa por completo.
 
@@ -106,6 +124,7 @@ Pestaña **Ticket**.
 - Aviso de cuadre si los importes coinciden.
 - **Trazabilidad**: los últimos 50 movimientos de esa mesa. Sirve para una reclamación.
 - Métricas: mesa, número de comensales, consumiciones y total.
+- **Registrar queja o error de comanda**: anota una incidencia de esa mesa. La nota es opcional. Hace falta estar identificado como barman. El panel cuenta esas incidencias; no las deduce de quitar una consumición.
 
 ### 3.4 WhatsApp
 
@@ -148,18 +167,55 @@ La ñ y las tildes se escriben sin acento (`Rincon`, `Cana`). Muchos lectores co
 
 En la térmica el QR ocupa casi todo el ancho del papel (68 mm) para que se pueda enfocar. Hay que imprimir el archivo nuevo, no uno descargado antes.
 
-## 5. Copias de seguridad
+## 5. Panel de indicadores
+
+Solo se ve después de entrar como administrador. La pestaña se llama **Panel**.
+
+Arriba se elige el periodo: **Hoy** (las últimas 24 horas), **7 días**, **30 días** o **Todo**. Las cuentas abiertas con importe entran con lo consumido hasta ahora. Si la mesa sigue abierta, esa foto sustituye a la copia ya guardada de la misma apertura, para no contar dos veces.
+
+### 5.1 Financieros
+
+- **Ticket medio**: venta del periodo partida por comensales. También por zona (barra, mesas y terraza).
+- **Coste de producto**: coste de lo vendido partido por su precio, solo en productos con coste informado. La referencia que muestra la pantalla es del 25 % al 30 %. No es un tope: la app no bloquea nada si te sales.
+- **RevPASH**: ingresos por asiento y hora. Usa los asientos de la mesa y el tiempo que lleva abierta. Sin asientos, esa mesa no entra.
+- **Margen por producto**: precio de venta menos coste, en euros, de los productos con coste. El gráfico enseña los que más dejan.
+
+### 5.2 Operaciones
+
+- **Rotación de mesa**: minutos desde que se abre la mesa hasta el ticket, o hasta ahora si sigue abierta.
+- **Ocupación de la terraza**: mesas de terraza con gente, ahora mismo, sobre las mesas de terraza que existen. No mira el clima ni el histórico.
+- **Tiempo de la cuenta**: minutos desde la primera consumición hasta el ticket. No separa la cocina de la barra.
+- **Cuentas de terraza por hora**: cuántas cuentas de terraza caen en cada hora del periodo.
+
+### 5.3 Personal
+
+- **Coste de personal**: euros de salario estimado partidos por las ventas. La referencia de la pantalla es del 30 % al 35 %.
+- El salario se calcula con los **€/hora** que escribes en el panel y con las horas que la mesa estuvo abierta. La venta de la cuenta se asigna a quien emitió el ticket (o al barman de ese teléfono, si la mesa sigue abierta). **0 €** no entra en el cálculo.
+- **Ventas por empleado y hora**: la misma atribución, en euros por hora.
+- **Rotación de personal**: bajas del periodo partidas por la plantilla media. Solo cuenta altas y bajas hechas en **Quién soy**. Los barmans que ya estaban al crear el fichero no cuentan como contratados ese día.
+
+### 5.4 Satisfacción
+
+- **Clientes que repiten**: nombres de comensal que salen en más de una cuenta, sobre los nombres distintos. No hay ficha de cliente: se compara el texto escrito en la mesa, sin distinguir mayúsculas.
+- **Quejas o errores**: incidencias registradas en Ticket, partidas por el número de cuentas.
+- **Notas de Google y TripAdvisor**: las escribes a mano, de 0 a 5. **0** significa que aún no las has anotado. La app no entra en esas webs.
+
+## 6. Copias de seguridad
 
 Copia de vez en cuando estos archivos, que están en la carpeta del proyecto y no van al repositorio:
 
-- `config_bar.json`: bar, barmans, WhatsApp, datos fiscales y el próximo número de ticket.
+- `config_bar.json`: bar, barmans, WhatsApp, datos fiscales, próximo número de ticket, usuario y PIN del administrador, €/hora y notas de reseñas.
 - `mesas_bar.json`: mesas abiertas, pedidos, historial y tickets ya emitidos.
 - `menu_bar.json`: productos y precios.
+- `costes_bar.json`: coste de cada producto.
+- `ventas_bar.json`: cuentas archivadas para el panel.
+- `personal_bar.json`: altas y bajas de barmans.
+- `incidencias_bar.json`: quejas y errores de comanda.
 - `assets/`: el logo.
 
-Si se pierde `config_bar.json`, el próximo ticket puede repetir un número ya usado.
+Si se pierde `config_bar.json`, el próximo ticket puede repetir un número ya usado y hay que volver a crear el PIN. Si se pierde `ventas_bar.json`, el panel solo ve las mesas que sigan abiertas.
 
-## 6. Atajos de uso
+## 7. Atajos de uso
 
 - Tab y Mayús+Tab mueven el foco. El control enfocado se marca con un borde.
 - Los botones tienen texto, no solo un icono.

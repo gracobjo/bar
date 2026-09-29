@@ -23,6 +23,10 @@ st.set_page_config(
 MENU_FILE = Path(__file__).with_name("menu_bar.json")
 CONFIG_FILE = Path(__file__).with_name("config_bar.json")
 MESAS_FILE = Path(__file__).with_name("mesas_bar.json")
+VENTAS_FILE = Path(__file__).with_name("ventas_bar.json")
+COSTES_FILE = Path(__file__).with_name("costes_bar.json")
+PERSONAL_FILE = Path(__file__).with_name("personal_bar.json")
+INCIDENCIAS_FILE = Path(__file__).with_name("incidencias_bar.json")
 MARCA_DIR = Path(__file__).with_name("assets")
 MARCA_FILE = MARCA_DIR / "marca_bar"
 
@@ -37,7 +41,15 @@ CONFIG_DEFAULT = {
     "iva_porcentaje": 10,  # IVA incluido en los precios del menú
     "serie_ticket": "A",
     "proximo_numero_ticket": 1,
+    "administrador_nombre": "administrador",
+    "administrador_pin": "",
+    "coste_hora": {},
+    "nota_google": None,
+    "nota_tripadvisor": None,
 }
+
+ZONAS_MESA = ("barra", "mesas", "terraza")
+ZONA_MESA_ETIQUETA = {"barra": "Barra", "mesas": "Mesas", "terraza": "Terraza"}
 
 EXTENSIONES_IMAGEN = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
@@ -185,6 +197,21 @@ def normalizar_config(config: dict | None) -> dict:
     base["proximo_numero_ticket"] = normalizar_numero_ticket(
         base.get("proximo_numero_ticket")
     )
+    base["administrador_nombre"] = (
+        " ".join(str(base.get("administrador_nombre") or "").split()) or "administrador"
+    )
+    base["administrador_pin"] = str(base.get("administrador_pin") or "")
+    tarifas = base.get("coste_hora") or {}
+    base["coste_hora"] = tarifas if isinstance(tarifas, dict) else {}
+    for clave_nota in ("nota_google", "nota_tripadvisor"):
+        nota = base.get(clave_nota)
+        if nota in ("", None):
+            base[clave_nota] = None
+            continue
+        try:
+            base[clave_nota] = float(nota)
+        except (TypeError, ValueError):
+            base[clave_nota] = None
     return base
 
 
@@ -288,10 +315,26 @@ def eliminar_imagen_marca() -> None:
             viejo.unlink(missing_ok=True)
 
 
-def normalizar_estructura_mesa(datos) -> dict:
+def inferir_zona(nombre: str) -> str:
+    texto = (nombre or "").casefold()
+    if "barra" in texto:
+        return "barra"
+    if "terraza" in texto:
+        return "terraza"
+    return "mesas"
+
+
+def normalizar_estructura_mesa(datos, nombre: str = "") -> dict:
     """Garantiza comensales + historial + abierta_en."""
     if not isinstance(datos, dict):
-        return {"abierta_en": ahora_iso(), "comensales": {}, "historial": []}
+        return {
+            "abierta_en": ahora_iso(),
+            "comensales": {},
+            "historial": [],
+            "zona": inferir_zona(nombre),
+            "asientos": 4,
+            "incidencias": 0,
+        }
     comensales = datos.get("comensales")
     if not isinstance(comensales, dict):
         comensales = {}
@@ -323,6 +366,17 @@ def normalizar_estructura_mesa(datos) -> dict:
             "huella": ticket["huella"],
             "datos": ticket["datos"],
         }
+    zona = datos.get("zona") if isinstance(datos, dict) else None
+    mesa["zona"] = zona if zona in ZONAS_MESA else inferir_zona(nombre)
+    try:
+        asientos = int(datos.get("asientos")) if isinstance(datos, dict) else 4
+    except (TypeError, ValueError):
+        asientos = 4
+    mesa["asientos"] = asientos if asientos >= 1 else 4
+    try:
+        mesa["incidencias"] = max(int(datos.get("incidencias") or 0), 0) if isinstance(datos, dict) else 0
+    except (TypeError, ValueError):
+        mesa["incidencias"] = 0
     return mesa
 
 
@@ -334,7 +388,7 @@ def cargar_mesas() -> dict:
         if not isinstance(raw, dict):
             return {}
         return {
-            str(nombre): normalizar_estructura_mesa(datos)
+            str(nombre): normalizar_estructura_mesa(datos, str(nombre))
             for nombre, datos in raw.items()
         }
     except (json.JSONDecodeError, TypeError, ValueError):
@@ -344,7 +398,7 @@ def cargar_mesas() -> dict:
 def guardar_mesas() -> None:
     payload = {}
     for nombre, datos in st.session_state.mesas.items():
-        mesa = normalizar_estructura_mesa(datos)
+        mesa = normalizar_estructura_mesa(datos, nombre)
         payload[nombre] = mesa
         st.session_state.mesas[nombre] = mesa
     MESAS_FILE.write_text(
@@ -353,9 +407,220 @@ def guardar_mesas() -> None:
     )
 
 
+def _leer_lista_json(ruta: Path) -> list:
+    if not ruta.exists():
+        return []
+    try:
+        raw = json.loads(ruta.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return []
+    return raw if isinstance(raw, list) else []
+
+
+def _escribir_json(ruta: Path, payload) -> None:
+    ruta.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def cargar_ventas() -> list:
+    return _leer_lista_json(VENTAS_FILE)
+
+
+def cargar_incidencias() -> list:
+    return _leer_lista_json(INCIDENCIAS_FILE)
+
+
+def cargar_personal() -> list:
+    return _leer_lista_json(PERSONAL_FILE)
+
+
+def cargar_costes() -> dict[str, Decimal]:
+    if not COSTES_FILE.exists():
+        return {}
+    try:
+        raw = json.loads(COSTES_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    costes = {}
+    for nombre, valor in raw.items():
+        try:
+            importe = Decimal(str(valor)).quantize(Decimal("0.01"))
+        except (InvalidOperation, ValueError):
+            continue
+        if importe > 0:
+            costes[str(nombre)] = importe
+    return costes
+
+
+def guardar_costes(costes: dict[str, Decimal]) -> None:
+    payload = {nombre: f"{importe:.2f}" for nombre, importe in costes.items() if importe > 0}
+    _escribir_json(COSTES_FILE, payload)
+    st.session_state.costes = cargar_costes()
+
+
+def registrar_personal(accion: str, nombre: str) -> None:
+    eventos = cargar_personal()
+    eventos.append({"ts": ahora_iso(), "accion": accion, "nombre": nombre})
+    _escribir_json(PERSONAL_FILE, eventos)
+
+
+def asegurar_personal_inicial() -> None:
+    if PERSONAL_FILE.exists():
+        return
+    eventos = [
+        {"ts": "2020-01-01 00:00:00", "accion": "alta", "nombre": nombre}
+        for nombre in lista_barmans()
+    ]
+    _escribir_json(PERSONAL_FILE, eventos)
+
+
+def minutos_entre(inicio: str, fin: str) -> int | None:
+    if not inicio or not fin:
+        return None
+    try:
+        arranque = datetime.fromisoformat(str(inicio))
+        cierre = datetime.fromisoformat(str(fin))
+    except ValueError:
+        return None
+    return max(int((cierre - arranque).total_seconds() // 60), 0)
+
+
+def cuenta_desde_mesa(nombre: str) -> dict | None:
+    """Foto de una mesa con consumo, para el panel. None si no hay importe."""
+    datos = st.session_state.mesas.get(nombre)
+    if not datos:
+        return None
+    cantidades: dict[str, int] = {}
+    for consumo in (datos.get("comensales") or {}).values():
+        if not isinstance(consumo, dict):
+            continue
+        for producto, cantidad in consumo.items():
+            cantidades[producto] = cantidades.get(producto, 0) + int(cantidad)
+    if not cantidades:
+        return None
+    costes = st.session_state.get("costes") or {}
+    lineas = []
+    total = Decimal("0.00")
+    for producto, cantidad in cantidades.items():
+        precio = st.session_state.menu.get(producto, Decimal("0.00"))
+        subtotal = (precio * cantidad).quantize(Decimal("0.01"))
+        total += subtotal
+        coste = costes.get(producto)
+        lineas.append(
+            {
+                "producto": nombre_limpio(producto) or str(producto),
+                "cantidad": cantidad,
+                "precio": f"{precio:.2f}",
+                "subtotal": f"{subtotal:.2f}",
+                "coste": f"{coste:.2f}" if coste is not None else None,
+            }
+        )
+    if total <= 0:
+        return None
+    abierta = str(datos.get("abierta_en") or ahora_iso())
+    ticket = (datos.get("ticket_fiscal") or {}).get("datos") or {}
+    fin = str(ticket.get("fecha") or ahora_iso())
+    historial = datos.get("historial") or []
+    primer = next(
+        (
+            evento.get("ts")
+            for evento in historial
+            if evento.get("accion") == "añadir" and evento.get("ts")
+        ),
+        None,
+    )
+    por_barman: dict[str, list[str]] = {}
+    for evento in historial:
+        barman = str(evento.get("barman") or "").strip()
+        marca = evento.get("ts")
+        if not barman or barman == "(sin identificar)" or not marca:
+            continue
+        por_barman.setdefault(barman, []).append(str(marca))
+    minutos_barman = {}
+    for barman, marcas in por_barman.items():
+        tramo = minutos_entre(min(marcas), max(marcas))
+        minutos_barman[barman] = tramo if tramo and tramo > 0 else 1
+    zona = datos.get("zona") if datos.get("zona") in ZONAS_MESA else inferir_zona(nombre)
+    return {
+        "mesa": nombre,
+        "abierta_en": abierta,
+        "fecha": fin,
+        "ticket": ticket.get("ticket") or "",
+        "cerrada": bool(ticket.get("ticket")),
+        "zona": zona,
+        "asientos": int(datos.get("asientos") or 4),
+        "n_comensales": len(datos.get("comensales") or {}),
+        "comensales": list((datos.get("comensales") or {}).keys()),
+        "barman": ticket.get("barman") or barman_activo() or "",
+        "minutos_mesa": minutos_entre(abierta, fin),
+        "minutos_servicio": minutos_entre(str(primer), fin) if primer else None,
+        "minutos_barman": minutos_barman,
+        "lineas": lineas,
+        "total": f"{total:.2f}",
+    }
+
+
+def archivar_mesa(nombre: str) -> None:
+    cuenta = cuenta_desde_mesa(nombre)
+    if not cuenta:
+        return
+    ventas = [
+        venta
+        for venta in cargar_ventas()
+        if not (
+            venta.get("mesa") == cuenta["mesa"]
+            and venta.get("abierta_en") == cuenta["abierta_en"]
+        )
+    ]
+    ventas.append(cuenta)
+    _escribir_json(VENTAS_FILE, ventas)
+
+
+def cuentas_abiertas() -> list:
+    abiertas = []
+    for nombre in st.session_state.mesas:
+        cuenta = cuenta_desde_mesa(nombre)
+        if cuenta:
+            abiertas.append(cuenta)
+    return abiertas
+
+
+def resumen_mesas_ahora() -> list:
+    resumen = []
+    for nombre, datos in st.session_state.mesas.items():
+        zona = datos.get("zona") if datos.get("zona") in ZONAS_MESA else inferir_zona(nombre)
+        resumen.append({"zona": zona, "ocupada": len(datos.get("comensales") or {})})
+    return resumen
+
+
+def registrar_incidencia(mesa: str, nota: str) -> None:
+    if mesa not in st.session_state.mesas:
+        return
+    st.session_state.mesas[mesa]["incidencias"] = int(
+        st.session_state.mesas[mesa].get("incidencias") or 0
+    ) + 1
+    guardar_mesas()
+    eventos = cargar_incidencias()
+    eventos.append(
+        {
+            "ts": ahora_iso(),
+            "mesa": mesa,
+            "barman": barman_activo() or "(sin identificar)",
+            "nota": " ".join((nota or "").split()),
+        }
+    )
+    _escribir_json(INCIDENCIAS_FILE, eventos)
+
+
+def es_admin() -> bool:
+    return bool(st.session_state.get("admin_ok"))
+
+
 def init_state() -> None:
     if "menu" not in st.session_state:
         st.session_state.menu = cargar_menu()
+    st.session_state.costes = cargar_costes()
     # Config y mesas siempre desde disco (varios móviles / barmans)
     st.session_state.config = cargar_config()
     if "pedidos" in st.session_state and st.session_state.pedidos:
@@ -389,6 +654,9 @@ def init_state() -> None:
     barmans = st.session_state.config.get("barmans") or []
     if st.session_state.barman_activo not in barmans:
         st.session_state.barman_activo = None
+    if "admin_ok" not in st.session_state:
+        st.session_state.admin_ok = False
+    asegurar_personal_inicial()
 
 
 def set_menu(menu: dict[str, Decimal]) -> None:
@@ -557,17 +825,25 @@ def asignar_comensal_a_mesa(nombre: str, mesa_destino: str) -> tuple[str | None,
     return None, aviso
 
 
-def crear_mesa(nombre: str) -> str | None:
+def crear_mesa(nombre: str, zona: str = "mesas", asientos: int = 4) -> str | None:
     nombre_ok = " ".join(nombre.strip().split())
     if not nombre_ok:
         return "El nombre de la mesa no puede estar vacío."
     if nombre_ok in st.session_state.mesas:
         return f"Ya existe la mesa «{nombre_ok}»."
     abierta = ahora_iso()
+    zona_ok = zona if zona in ZONAS_MESA else inferir_zona(nombre_ok)
+    try:
+        sitios = int(asientos)
+    except (TypeError, ValueError):
+        sitios = 4
     st.session_state.mesas[nombre_ok] = {
         "abierta_en": abierta,
         "comensales": {},
         "historial": [],
+        "zona": zona_ok,
+        "asientos": sitios if sitios >= 1 else 4,
+        "incidencias": 0,
     }
     registrar_evento(
         nombre_ok,
@@ -582,6 +858,7 @@ def crear_mesa(nombre: str) -> str | None:
 
 
 def eliminar_mesa(nombre: str) -> None:
+    archivar_mesa(nombre)
     st.session_state.mesas.pop(nombre, None)
     if st.session_state.mesa_activa == nombre:
         restantes = list(st.session_state.mesas.keys())
@@ -619,8 +896,11 @@ def vaciar_mesa(nombre: str) -> None:
             detalle="Mesa vaciada (comensales y consumiciones)",
             persistir=False,
         )
+        archivar_mesa(nombre)
         st.session_state.mesas[nombre]["comensales"] = {}
         st.session_state.mesas[nombre].pop("ticket_fiscal", None)
+        st.session_state.mesas[nombre]["abierta_en"] = ahora_iso()
+        st.session_state.mesas[nombre]["incidencias"] = 0
         if st.session_state.mesa_activa == nombre:
             st.session_state.persona_activa = None
         guardar_mesas()
@@ -640,6 +920,10 @@ def renombrar_producto_en_pedidos(antiguo: str, nuevo: str) -> None:
             if antiguo in consumo:
                 cantidad = consumo.pop(antiguo)
                 consumo[nuevo] = consumo.get(nuevo, 0) + cantidad
+    costes = dict(st.session_state.get("costes") or {})
+    if antiguo in costes:
+        costes[nuevo] = costes.pop(antiguo)
+        guardar_costes(costes)
     guardar_mesas()
 
 
@@ -647,6 +931,10 @@ def eliminar_producto_de_pedidos(producto: str) -> None:
     for mesa in st.session_state.mesas.values():
         for consumo in mesa["comensales"].values():
             consumo.pop(producto, None)
+    costes = dict(st.session_state.get("costes") or {})
+    if producto in costes:
+        costes.pop(producto, None)
+        guardar_costes(costes)
     guardar_mesas()
 
 
@@ -809,7 +1097,15 @@ def ui_crud_menu() -> None:
                 value=2.0,
                 step=0.10,
                 format="%.2f",
-                help="Precio unitario del producto en euros.",
+                help="Precio de venta. Lleva el IVA incluido.",
+            )
+            coste = st.number_input(
+                "Coste en euros",
+                min_value=0.0,
+                value=0.0,
+                step=0.05,
+                format="%.2f",
+                help="Lo que cuesta producir una unidad. 0 significa que todavía no lo sabes.",
             )
             vista_previa = componer_producto(icono, nombre or "…")
             st.caption(f"Vista previa: **{vista_previa}**")
@@ -834,6 +1130,10 @@ def ui_crud_menu() -> None:
                     nuevo = dict(menu)
                     nuevo[clave] = Decimal(f"{precio:.2f}")
                     set_menu(nuevo)
+                    if coste > 0:
+                        costes = dict(st.session_state.costes)
+                        costes[clave] = Decimal(f"{coste:.2f}")
+                        guardar_costes(costes)
                     st.success(f"Producto añadido: {clave} a {precio:.2f} euros.")
                     st.rerun()
 
@@ -872,8 +1172,18 @@ def ui_crud_menu() -> None:
                     value=float(precio),
                     step=0.10,
                     format="%.2f",
-                    help=f"Cambia el precio de «{producto}» en euros.",
+                    help=f"Cambia el precio de «{producto}» en euros. El IVA va incluido.",
                     key=f"pre_{producto}",
+                )
+                coste_actual = st.session_state.costes.get(producto)
+                nuevo_coste = st.number_input(
+                    f"Coste de {nombre_actual or producto} (€)",
+                    min_value=0.0,
+                    value=float(coste_actual or 0),
+                    step=0.05,
+                    format="%.2f",
+                    help="Coste de producir una unidad. 0 significa desconocido y no entra en el margen.",
+                    key=f"cos_{producto}",
                 )
                 st.caption(
                     f"Vista previa: **{componer_producto(nuevo_icono, nuevo_nombre or '…')}**"
@@ -921,6 +1231,13 @@ def ui_crud_menu() -> None:
                         if clave != producto:
                             renombrar_producto_en_pedidos(producto, clave)
                         set_menu(actualizado)
+                        costes = dict(st.session_state.costes)
+                        if nuevo_coste > 0:
+                            costes[clave] = Decimal(f"{nuevo_coste:.2f}")
+                        else:
+                            costes.pop(clave, None)
+                            costes.pop(producto, None)
+                        guardar_costes(costes)
                         st.success(
                             f"Producto actualizado: {clave} a {nuevo_precio:.2f} euros."
                         )
@@ -946,6 +1263,8 @@ def ui_crud_menu() -> None:
             ),
         ):
             set_menu({k: Decimal(v) for k, v in MENU_DEFAULT.items()})
+            for nombre_mesa_reset in list(st.session_state.mesas):
+                archivar_mesa(nombre_mesa_reset)
             st.session_state.mesas = {}
             st.session_state.mesa_activa = None
             st.session_state.persona_activa = None
@@ -967,15 +1286,29 @@ def ui_gestion_mesas() -> None:
     )
 
     with st.form("form_nueva_mesa", clear_on_submit=True):
-        c1, c2 = st.columns([3, 1])
-        nombre = c1.text_input(
+        nombre = st.text_input(
             "Nombre de la mesa",
             placeholder="Ej: Mesa 1, Terraza A, Barra",
             help="Identificador de la mesa en el local.",
         )
-        crear = c2.form_submit_button(
+        c_zona, c_asientos, c_crear = st.columns([2, 1, 1])
+        zona = c_zona.selectbox(
+            "Zona",
+            options=list(ZONAS_MESA),
+            index=1,
+            format_func=lambda valor: ZONA_MESA_ETIQUETA[valor],
+            help="Sirve para el ticket medio y la ocupación: barra, mesas o terraza.",
+        )
+        asientos = c_asientos.number_input(
+            "Asientos",
+            min_value=1,
+            value=4,
+            step=1,
+            help="Plazas de esta mesa. Entran en el ingreso por asiento y hora.",
+        )
+        crear = c_crear.form_submit_button(
             "Crear mesa",
-            use_container_width=True,
+            width="stretch",
             type="primary",
             help="Crea una mesa vacía y la deja seleccionada.",
         )
@@ -985,7 +1318,7 @@ def ui_gestion_mesas() -> None:
                     "Identifícate como barman en la barra lateral antes de abrir una mesa."
                 )
             else:
-                error = crear_mesa(nombre)
+                error = crear_mesa(nombre, zona, int(asientos))
                 if error:
                     st.error(error)
                 else:
@@ -1046,6 +1379,26 @@ def ui_gestion_mesas() -> None:
                     help="Cambia el nombre de esta mesa.",
                     key=f"ren_mesa_{nombre_mesa}",
                 )
+                zona_actual = (
+                    datos.get("zona") if datos.get("zona") in ZONAS_MESA else inferir_zona(nombre_mesa)
+                )
+                e_zona, e_asientos = st.columns(2)
+                zona_mesa = e_zona.selectbox(
+                    "Zona",
+                    options=list(ZONAS_MESA),
+                    index=list(ZONAS_MESA).index(zona_actual),
+                    format_func=lambda valor: ZONA_MESA_ETIQUETA[valor],
+                    key=f"zona_{nombre_mesa}",
+                    help="Barra, mesas del salón o terraza.",
+                )
+                asientos_mesa = e_asientos.number_input(
+                    "Asientos",
+                    min_value=1,
+                    value=int(datos.get("asientos") or 4),
+                    step=1,
+                    key=f"asientos_{nombre_mesa}",
+                    help="Plazas para calcular el ingreso por asiento.",
+                )
                 b1, b2, b3 = st.columns(3)
                 with b1:
                     guardar = st.form_submit_button(
@@ -1074,7 +1427,12 @@ def ui_gestion_mesas() -> None:
                     if error:
                         st.error(error)
                     else:
-                        st.success(f"Mesa renombrada a «{nuevo_nombre.strip()}».")
+                        destino = " ".join(nuevo_nombre.strip().split()) or nombre_mesa
+                        if destino in st.session_state.mesas:
+                            st.session_state.mesas[destino]["zona"] = zona_mesa
+                            st.session_state.mesas[destino]["asientos"] = int(asientos_mesa)
+                            guardar_mesas()
+                        st.success(f"Mesa actualizada: «{destino}».")
                         st.rerun()
                 if vaciar:
                     vaciar_mesa(nombre_mesa)
@@ -1586,6 +1944,25 @@ def ui_resumen_y_whatsapp(total_general: Decimal) -> None:
     if total_general > 0:
         st.success("Cuadre correcto. Todos los importes cuadran.")
 
+    nota_incidencia = st.text_input(
+        "Nota de la incidencia",
+        placeholder="Ej: caña cambiada, se rompió la copa",
+        help="Opcional. Queda registrada con la mesa, la hora y el barman.",
+        key="nota_incidencia",
+    )
+    if st.button(
+        "Registrar queja o error de comanda",
+        help="Suma una incidencia de esta mesa para el indicador de quejas.",
+    ):
+        if not exigir_barman():
+            pass
+        elif not st.session_state.mesa_activa:
+            st.error("No hay mesa activa.")
+        else:
+            registrar_incidencia(st.session_state.mesa_activa, nota_incidencia)
+            st.success("Incidencia registrada.")
+            st.rerun()
+
     st.markdown("---")
     st.subheader("Compartir por WhatsApp")
 
@@ -1729,6 +2106,7 @@ def emitir_ticket_fiscal(mesa: str, lineas: list[dict], total: Decimal) -> dict:
         detalle=f"Ticket fiscal {codigo} por {desglose['total']} EUR",
         persistir=True,
     )
+    archivar_mesa(mesa)
     return datos
 
 
@@ -1896,6 +2274,7 @@ with st.sidebar:
                     st.error(f"«{nombre_b}» ya está en la lista.")
                 else:
                     set_config({"barmans": barmans + [nombre_b]})
+                    registrar_personal("alta", nombre_b)
                     st.session_state.barman_activo = nombre_b
                     st.success(f"Barman añadido e identificado: {nombre_b}")
                     st.rerun()
@@ -1915,8 +2294,67 @@ with st.sidebar:
                     set_config(
                         {"barmans": [b for b in barmans if b != a_borrar]}
                     )
+                    registrar_personal("baja", a_borrar)
                     st.success(f"Barman eliminado: {a_borrar}")
                     st.rerun()
+
+    with st.expander("Administrador", expanded=not es_admin()):
+        nombre_admin = st.session_state.config.get("administrador_nombre") or "administrador"
+        pin_guardado = str(st.session_state.config.get("administrador_pin") or "")
+        if es_admin():
+            st.caption(f"Sesión de **{nombre_admin}** abierta en este teléfono.")
+            if st.button(
+                "Salir del panel",
+                width="stretch",
+                help="Cierra el panel de indicadores en este teléfono.",
+            ):
+                st.session_state.admin_ok = False
+                st.rerun()
+        elif not pin_guardado:
+            st.caption("Elige un PIN de al menos 4 caracteres para crear el acceso.")
+            pin_nuevo = st.text_input(
+                "PIN de administrador",
+                type="password",
+                key="pin_crear_admin",
+                help="Solo quien lo sepa verá el panel de indicadores.",
+            )
+            if st.button(
+                "Crear administrador",
+                type="primary",
+                width="stretch",
+                help="Guarda el usuario administrador y abre el panel.",
+            ):
+                if len((pin_nuevo or "").strip()) < 4:
+                    st.error("El PIN necesita al menos 4 caracteres.")
+                else:
+                    set_config(
+                        {
+                            "administrador_nombre": "administrador",
+                            "administrador_pin": pin_nuevo.strip(),
+                        }
+                    )
+                    st.session_state.admin_ok = True
+                    st.rerun()
+        else:
+            st.caption(f"Usuario: **{nombre_admin}**")
+            pin_admin = st.text_input(
+                "PIN",
+                type="password",
+                key="pin_entrar_admin",
+                help="PIN del administrador.",
+            )
+            if st.button(
+                "Entrar",
+                type="primary",
+                width="stretch",
+                help="Abre la pestaña Panel con los indicadores.",
+            ):
+                if pin_admin == pin_guardado:
+                    st.session_state.admin_ok = True
+                    st.success(f"Has entrado como {nombre_admin}.")
+                    st.rerun()
+                else:
+                    st.error("PIN incorrecto.")
 
     with st.expander("Marca del bar", expanded=False):
         st.caption("Nombre e imagen que se muestran en la app y en el mensaje de WhatsApp.")
@@ -2167,6 +2605,8 @@ with st.sidebar:
         use_container_width=True,
         help="Elimina todas las mesas y sus cuentas. El menú no se modifica.",
     ):
+        for nombre_cierre in list(st.session_state.mesas):
+            archivar_mesa(nombre_cierre)
         st.session_state.mesas = {}
         st.session_state.mesa_activa = None
         st.session_state.persona_activa = None
@@ -2193,25 +2633,32 @@ else:
         "Todo queda con fecha, hora y barman para reclamaciones."
     )
 
-tab_mesas, tab_pedido, tab_ticket, tab_menu = st.tabs(
-    ["Mesas", "Pedido", "Ticket", "Menú (crear, editar, borrar)"]
-)
+nombres_pestanas = ["Mesas", "Pedido", "Ticket", "Menú (crear, editar, borrar)"]
+if es_admin():
+    nombres_pestanas.append("Panel")
+pestanas = st.tabs(nombres_pestanas)
 
-with tab_mesas:
+with pestanas[0]:
     ui_gestion_mesas()
 
-with tab_pedido:
+with pestanas[1]:
     persona = ui_personas()
     if persona:
         st.markdown("---")
         ui_anadir_consumiciones(persona)
 
-with tab_ticket:
+with pestanas[2]:
     total = ui_ticket()
     ui_resumen_y_whatsapp(total)
 
-with tab_menu:
+with pestanas[3]:
     ui_crud_menu()
+
+if es_admin():
+    with pestanas[4]:
+        from dashboard import ui_dashboard
+
+        ui_dashboard()
 
 st.caption(
     "Python + Streamlit · Precios con Decimal · Menú persistente en JSON · "

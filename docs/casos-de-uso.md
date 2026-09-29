@@ -21,19 +21,20 @@ Actor principal de todos los casos: el barman, salvo que se diga otra cosa. El s
 
 ## CU-02 Mantener la carta
 
-**Objetivo:** tener productos con icono y precio.
+**Objetivo:** tener productos con icono, precio y, si se conoce, coste.
 
 **Flujo principal**
 
 1. El barman abre la pestaña **Menú**.
-2. Indica icono, nombre y precio y pulsa **Guardar producto**.
-3. El sistema añade el producto y lo escribe en `menu_bar.json`.
+2. Indica icono, nombre, precio y coste, y pulsa **Guardar producto**.
+3. El sistema añade el producto en `menu_bar.json`. Si el coste es mayor que 0, lo escribe en `costes_bar.json`.
 
 **Alternativas**
 
-- 2a. Edita un producto existente y pulsa **Guardar cambios**. Las mesas que lo tenían pasan a usar el nombre nuevo.
-- 2b. Pulsa **Eliminar producto**. Desaparece de la carta y de las mesas abiertas.
-- 2c. Pulsa **Restaurar menú por defecto**. La carta vuelve a los cuatro productos de ejemplo.
+- 2a. El coste es 0. El sistema no guarda coste. El panel deja ese producto fuera del porcentaje y del margen.
+- 2b. Edita un producto existente y pulsa **Guardar cambios**. Las mesas que lo tenían pasan a usar el nombre nuevo.
+- 2c. Pulsa **Eliminar producto**. Desaparece de la carta y de las mesas abiertas.
+- 2d. Pulsa **Restaurar menú por defecto**. Antes archiva las cuentas con importe. La carta vuelve a los cuatro productos de ejemplo.
 
 ## CU-03 Configurar el bar
 
@@ -58,16 +59,17 @@ Actor principal de todos los casos: el barman, salvo que se diga otra cosa. El s
 **Flujo principal**
 
 1. El barman abre **Mesas**.
-2. Escribe un nombre y pulsa **Crear mesa**.
-3. El sistema crea la mesa, guarda la hora de apertura, la marca como activa y anota el evento `abrir`.
+2. Escribe un nombre, elige zona y asientos, y pulsa **Crear mesa**.
+3. El sistema crea la mesa, guarda la hora de apertura, la zona y los asientos, la marca como activa y anota el evento `abrir`.
 
 **Alternativas**
 
 - 2a. El nombre está vacío o repetido. El sistema avisa y no crea otra.
 - 3a. Pulsa **Seleccionar** en otra mesa. Esa pasa a ser la activa en su navegador.
-- 3b. Renombra la mesa. Se conservan comensales e historial.
-- 3c. Vacía la mesa. Se van los comensales, las consumiciones y el ticket fiscal de esa cuenta. La mesa sigue.
-- 3d. Cierra la mesa. El sistema la borra.
+- 3b. Renombra la mesa o cambia zona y asientos. Se conservan comensales e historial.
+- 3c. Vacía la mesa. Archiva la cuenta si tenía importe, se van los comensales, las consumiciones y el ticket fiscal, y empieza otra apertura. La mesa sigue.
+- 3d. Cierra la mesa. El sistema archiva la cuenta, si la hay, y borra la mesa.
+- 3e. La mesa no tiene zona guardada. El sistema usa el nombre: «barra», «terraza» o, si no, mesas.
 
 ## CU-05 Sentar a un comensal
 
@@ -119,6 +121,7 @@ Actor principal de todos los casos: el barman, salvo que se diga otra cosa. El s
 **Alternativas**
 
 - 2a. Corrige una cantidad desde el propio ticket. El flujo sigue en CU-06.
+- 2b. Escribe una nota y pulsa **Registrar queja o error de comanda**. Hace falta barman. El sistema suma una incidencia de esa mesa. Quitar una línea no cuenta como queja.
 
 ## CU-08 Enviar la cuenta por WhatsApp
 
@@ -173,11 +176,70 @@ Actor principal de todos los casos: el barman, salvo que se diga otra cosa. El s
 
 - 2a. El papel térmico recorta el borde o el QR es de un PDF antiguo, más pequeño. El lector no descodifica. Hay que imprimir el PDF nuevo, con el QR a 68 mm.
 
+## CU-11 Entrar como administrador
+
+**Actor:** administrador. Puede ser la misma persona que un barman, pero la sesión es otra.
+
+**Objetivo:** ver la pestaña Panel en ese teléfono.
+
+**Precondición:** existe un PIN en `config_bar.json`. Si no existe, el flujo es el de creación.
+
+**Flujo principal**
+
+1. Abre **Administrador** en la barra lateral.
+2. Escribe el PIN y pulsa **Entrar**.
+3. El sistema abre la sesión en ese navegador y muestra la pestaña **Panel**.
+
+**Alternativas**
+
+- 1a. No hay PIN. Escribe uno de al menos 4 caracteres y pulsa **Crear administrador**. El usuario queda como `administrador` y la sesión se abre.
+- 2a. El PIN no coincide. El sistema avisa y no muestra el panel.
+- 3a. Pulsa **Salir del panel**. El panel desaparece en ese teléfono. El PIN sigue guardado.
+
+## CU-12 Consultar los indicadores
+
+**Actor:** administrador.
+
+**Objetivo:** ver las cifras del periodo a partir de las cuentas reales.
+
+**Precondición:** sesión de administrador abierta. Hay al menos una cuenta con importe, abierta o archivada, si se esperan cifras.
+
+**Flujo principal**
+
+1. Abre la pestaña **Panel**.
+2. Elige **Hoy**, **7 días**, **30 días** o **Todo**. Hoy son las últimas 24 horas.
+3. El sistema muestra financieros, operaciones, personal y satisfacción.
+4. Una mesa abierta sustituye a su copia archivada de la misma apertura.
+
+**Alternativas**
+
+- 3a. Falta el coste del producto, los €/hora, la zona, los asientos o la nota de una reseña. Ese indicador queda vacío o fuera del porcentaje. El sistema no inventa la cifra.
+- 3b. No hay mesas de terraza. La ocupación no tiene valor.
+
+## CU-13 Completar los datos del panel
+
+**Actor:** administrador.
+
+**Objetivo:** aportar lo que las cuentas no traen solas.
+
+**Precondición:** sesión de administrador abierta.
+
+**Flujo principal**
+
+1. En **Personal**, escribe los €/hora y pulsa **Guardar costes por hora**.
+2. En **Satisfacción**, anota Google y TripAdvisor y pulsa **Guardar notas**.
+3. El sistema guarda tarifas y notas en `config_bar.json`. Un 0 queda como dato no informado.
+
+**Alternativas**
+
+- 1a. En **Acceso de administrador** cambia el PIN. Si el actual no coincide o el nuevo tiene menos de 4 caracteres, el sistema no lo guarda.
+
 ## Resumen
 
 ```mermaid
 flowchart LR
   barman((Barman))
+  admin((Administrador))
   lector((Lector de QR))
   subgraph app [Cuenta del Bar]
     cu01([CU-01 Identificarse])
@@ -190,6 +252,9 @@ flowchart LR
     cu08([CU-08 WhatsApp])
     cu09([CU-09 Ticket PDF])
     cu10([CU-10 Leer QR])
+    cu11([CU-11 Entrar al panel])
+    cu12([CU-12 Indicadores])
+    cu13([CU-13 Datos del panel])
   end
   barman --> cu01
   barman --> cu02
@@ -200,12 +265,17 @@ flowchart LR
   barman --> cu07
   barman --> cu08
   barman --> cu09
+  admin --> cu11
+  admin --> cu12
+  admin --> cu13
   lector --> cu10
   cu09 --> cu10
   cu01 --> cu06
   cu04 --> cu05
   cu05 --> cu06
   cu06 --> cu07
+  cu11 --> cu12
+  cu07 --> cu12
 ```
 
 Las flechas entre casos indican el orden habitual, no una inclusión formal de UML.

@@ -1,12 +1,13 @@
 # Diagramas UML
 
-Los diagramas describen el dominio y los flujos reales del código. La implementación no usa clases: mesas, eventos y tickets son diccionarios en JSON, y la lógica está en funciones de `bar.py` y `ticket_fiscal.py`. El diagrama de clases es el modelo de información, no un mapa de `class` de Python.
+Los diagramas describen el dominio y los flujos reales del código. La implementación no usa clases: mesas, eventos, tickets e indicadores son diccionarios en JSON, y la lógica está en funciones de `bar.py`, `kpis.py` y `ticket_fiscal.py`. El diagrama de clases es el modelo de información, no un mapa de `class` de Python.
 
 ## 1. Casos de uso
 
 ```mermaid
 flowchart TB
   barman((Barman))
+  admin((Administrador))
   lector((Quien escanea))
   subgraph sistema [Cuenta del Bar]
     id[Identificarse]
@@ -18,6 +19,8 @@ flowchart TB
     cuenta[Revisar cuenta y trazabilidad]
     wa[Compartir por WhatsApp]
     pdf[Emitir ticket PDF]
+    acceso[Entrar al panel]
+    kpis[Consultar indicadores]
   end
   barman --- id
   barman --- carta
@@ -28,6 +31,8 @@ flowchart TB
   barman --- cuenta
   barman --- wa
   barman --- pdf
+  admin --- acceso
+  admin --- kpis
   lector --- pdf
 ```
 
@@ -48,18 +53,35 @@ classDiagram
     iva_porcentaje
     serie_ticket
     proximo_numero_ticket
+    administrador_nombre
+    administrador_pin
+    coste_hora
+    nota_google
+    nota_tripadvisor
   }
   class Producto {
     nombre
     icono
     precio Decimal
+    coste Decimal
   }
   class Mesa {
     nombre
     abierta_en
+    zona
+    asientos
+    incidencias
     comensales
     historial
     ticket_fiscal
+  }
+  class CuentaArchivada {
+    mesa
+    abierta_en
+    fecha
+    zona
+    total
+    lineas
   }
   class Comensal {
     nombre
@@ -88,10 +110,11 @@ classDiagram
   Mesa "1" *-- "*" Comensal
   Mesa "1" *-- "*" Evento
   Mesa "1" o-- "0..1" TicketFiscal
+  Mesa "1" ..> "0..1" CuentaArchivada : archiva si hay importe
   Comensal "*" --> "*" Producto : cantidad
 ```
 
-`iva_porcentaje` solo puede ser 0, 4, 10 o 21. `TicketFiscal` aparece cuando se emite y desaparece al vaciar la mesa.
+`iva_porcentaje` solo puede ser 0, 4, 10 o 21. `zona` es barra, mesas o terraza. `TicketFiscal` aparece cuando se emite y desaparece al vaciar la mesa. `CuentaArchivada` conserva esa sentada para el panel. `coste` solo existe si es mayor que 0. El PIN no se dibuja como credencial del barman: solo abre el panel.
 
 ## 3. Secuencia: apuntar una consumición
 
@@ -157,9 +180,29 @@ stateDiagram-v2
   TicketEmitido --> [*]: cerrar
 ```
 
-«Cambia la cuenta» significa que cambia alguna línea, el total o un dato fiscal que entra en la huella. La mesa sigue abierta. El ticket anterior deja de valer para esa huella y la próxima emisión pide otro número.
+«Cambia la cuenta» significa que cambia alguna línea, el total o un dato fiscal que entra en la huella. La mesa sigue abierta. El ticket anterior deja de valer para esa huella y la próxima emisión pide otro número. Vaciar archiva la cuenta y abre otro `abierta_en`.
 
-## 6. Actividad de una jornada
+## 6. Secuencia: abrir el panel
+
+```mermaid
+sequenceDiagram
+  actor Admin as Administrador
+  participant UI as Panel
+  participant App as bar.py
+  participant Kpi as kpis.py
+  participant Disco as JSON
+  Admin->>UI: PIN y Entrar
+  alt PIN distinto
+    App-->>UI: aviso y sin pestana
+  else PIN correcto
+    App->>App: admin_ok en la sesion
+    UI->>App: cargar ventas, mesas, costes, personal
+    App->>Kpi: calcular(periodo)
+    Kpi-->>UI: indicadores o vacio si falta el dato
+  end
+```
+
+## 7. Actividad de una jornada
 
 ```mermaid
 flowchart TD
@@ -181,36 +224,48 @@ flowchart TD
   imprimir --> fin
 ```
 
-## 7. Componentes
+## 8. Componentes
 
 ```mermaid
 flowchart LR
-  subgraph navegador [Navegador del barman]
+  subgraph navegador [Navegador]
     ui[Paginas Streamlit]
   end
   subgraph proceso [Proceso Python]
     bar[bar.py]
+    dash[dashboard.py]
+    kpi[kpis.py]
     fiscal[ticket_fiscal.py]
   end
   subgraph disco [Carpeta del proyecto]
     cfg[config_bar.json]
     menu[menu_bar.json]
+    costes[costes_bar.json]
     mesas[mesas_bar.json]
+    ventas[ventas_bar.json]
+    personal[personal_bar.json]
+    incidencias[incidencias_bar.json]
     logo[assets]
   end
   ui --> bar
+  bar --> dash
+  dash --> kpi
   bar --> fiscal
   bar --> cfg
   bar --> menu
+  bar --> costes
   bar --> mesas
+  bar --> ventas
+  bar --> personal
+  bar --> incidencias
   bar --> logo
   bar --> wa[WhatsApp en el movil]
   fiscal --> papel[Impresora 80 mm o A4]
 ```
 
-WhatsApp no recibe una llamada del servidor. `bar.py` solo construye una URL `api.whatsapp.com` y el navegador la abre. La impresora tampoco está conectada al proceso: el barman descarga el PDF y lo imprime con el sistema.
+WhatsApp no recibe una llamada del servidor. `bar.py` solo construye una URL `api.whatsapp.com` y el navegador la abre. La impresora tampoco está conectada al proceso: el barman descarga el PDF y lo imprime con el sistema. `dashboard.py` no importa `bar.py`: usa el módulo que Streamlit ya está ejecutando.
 
-## 8. Despliegue
+## 9. Despliegue
 
 ```mermaid
 flowchart TB

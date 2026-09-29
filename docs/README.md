@@ -1,6 +1,6 @@
 # Documentación de Cuenta del Bar
 
-Aplicación web en Python y Streamlit para llevar las cuentas de un bar: mesas, comensales, trazabilidad por barman y tickets en PDF con código QR.
+Aplicación web en Python y Streamlit para llevar las cuentas de un bar: mesas, comensales, trazabilidad por barman, tickets en PDF con código QR y un panel de indicadores reservado al administrador.
 
 | Documento | Para quién | Contenido |
 | --- | --- | --- |

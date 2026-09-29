@@ -26,19 +26,27 @@ En Windows el PDF usa Arial (`%WINDIR%\Fonts\arial.ttf` y `arialbd.ttf`) para ti
 ## 2. Mapa del código
 
 ```text
-bar.py              Interfaz, mesas, pedidos, WhatsApp, emisión del número
+bar.py              Interfaz, mesas, pedidos, WhatsApp, emisión del número, archivo de cuentas
+dashboard.py        Pestaña Panel. No importa bar.py: lo toma del proceso ya cargado
+kpis.py             Cálculo de indicadores, sin Streamlit
 ticket_fiscal.py    IVA, huella, texto del QR, PDF
 requirements.txt
 docs/               Esta documentación
-config_bar.json     Configuración (no se versiona)
+config_bar.json     Configuración, PIN y tarifas (no se versiona)
 mesas_bar.json      Mesas abiertas (no se versiona)
 menu_bar.json       Carta (no se versiona)
+costes_bar.json     Coste por producto (no se versiona)
+ventas_bar.json     Cuentas archivadas (no se versiona)
+personal_bar.json   Altas y bajas (no se versiona)
+incidencias_bar.json Quejas (no se versiona)
 assets/marca_bar.*  Logo (no se versiona)
 ```
 
-`bar.py` no define clases de dominio. Los datos son diccionarios y los precios son `Decimal`. `ticket_fiscal.py` no importa Streamlit: se puede llamar desde un script.
+`bar.py` no define clases de dominio. Los datos son diccionarios y los precios son `Decimal`. `ticket_fiscal.py` y `kpis.py` no importan Streamlit. `dashboard.py` no debe hacer `import bar`: `streamlit run bar.py` carga el archivo como `__main__`, y un import volvería a ejecutar la app. Busca el módulo con `sys.modules.get("bar") or sys.modules["__main__"]`.
 
-Cada rerun de Streamlit vuelve a leer configuración y mesas del disco (`init_state`). Así, dos móviles que apuntan al mismo proceso ven los cambios del otro en la siguiente interacción. El barman activo no se comparte: es de la sesión del navegador.
+`pandas` llega con Streamlit y solo lo usa el panel para los gráficos. No está en `requirements.txt` por separado.
+
+Cada rerun de Streamlit vuelve a leer configuración, costes y mesas del disco (`init_state`). Así, dos móviles que apuntan al mismo proceso ven los cambios del otro en la siguiente interacción. El barman activo y la sesión de administrador no se comparten: son de la sesión del navegador.
 
 ## 3. Configuración
 
@@ -52,6 +60,9 @@ Normalizaciones:
 - Próximo número: entero mayor o igual que 1.
 - IVA: solo `0`, `4`, `10` o `21`. Si no vale, queda `10`.
 - Barmans: lista única, ordenada sin distinguir mayúsculas.
+- Administrador: nombre (por defecto `administrador`) y PIN en texto. El PIN vacío significa que aún no se ha creado. No se versiona el fichero.
+- `coste_hora`: mapa barman → importe. Cadena vacía o ausencia significa tarifa desconocida.
+- `nota_google` y `nota_tripadvisor`: número o `null`. Cero o vacío se guardan como no anotadas al pulsar **Guardar notas**.
 
 `set_config` fusiona, normaliza y escribe el archivo. También cierra la sesión si el barman activo ya no está en la lista.
 
@@ -66,6 +77,9 @@ Cada mesa en `mesas_bar.json`:
     "pepe": { "🍺 Caña": 1 }
   },
   "historial": [],
+  "zona": "barra",
+  "asientos": 4,
+  "incidencias": 0,
   "ticket_fiscal": {
     "huella": "<sha256>",
     "datos": {}
@@ -73,9 +87,11 @@ Cada mesa en `mesas_bar.json`:
 }
 ```
 
-`ticket_fiscal` solo existe después de emitir. `vaciar_mesa` lo borra. `normalizar_estructura_mesa` lo conserva si tiene `huella` y `datos.ticket`.
+`ticket_fiscal` solo existe después de emitir. `vaciar_mesa` lo borra, pone `incidencias` a 0 y renueva `abierta_en`, para que la siguiente sentada sea otro periodo. `normalizar_estructura_mesa` conserva el ticket si tiene `huella` y `datos.ticket`.
 
-La clave del producto en `comensales` incluye el icono (`🍺 Caña`). En el ticket y en WhatsApp se usa `nombre_limpio`, que quita ese icono.
+`zona` es `barra`, `mesas` o `terraza`. Si falta, `inferir_zona` mira el nombre: «barra», si no «terraza», si no `mesas`. `asientos` mínimo 1; si falta, 4.
+
+La clave del producto en `comensales` incluye el icono (`🍺 Caña`). En el ticket y en WhatsApp se usa `nombre_limpio`, que quita ese icono. El coste de esa unidad no vive en la mesa: está en `costes_bar.json` y solo se guarda si es mayor que 0.
 
 Un comensal solo está en una mesa. `asignar_comensal_a_mesa` lo mueve si ya existía y conserva sus cantidades.
 
@@ -149,23 +165,54 @@ Impresora de 58 mm: hoy el ancho está fijado en `ANCHO_TERMICA_MM = 80` y el QR
 
 `generar_mensaje_whatsapp` construye texto plano, sin emoticonos. `crear_enlace_whatsapp` usa `https://api.whatsapp.com/send`. Con teléfono, añade `phone`. El mensaje va en UTF-8 dentro de la query.
 
-## 9. Interfaz
+## 9. Cuentas archivadas e indicadores
 
-Pestañas, en este orden: Mesas, Pedido, Ticket, Menú. La barra lateral no es una pestaña: identidad, marca, accesibilidad, WhatsApp, datos fiscales y acciones rápidas de mesas.
+`archivar_mesa` escribe en `ventas_bar.json` una foto de la mesa si tiene importe. La clave de esa sentada es mesa más `abierta_en`. Se archiva al emitir el ticket, al vaciar, al cerrar una mesa, al cerrar todas y al restaurar el menú. Mientras la mesa sigue abierta, `fusionar_cuentas` sustituye esa fila por la foto en vivo, para no dejar una copia vieja ni contar dos veces.
 
-`exigir_barman` devuelve falso y muestra un aviso si no hay barman. Lo usan las consumiciones y la emisión del ticket.
+`cuenta_desde_mesa` devuelve `None` si no hay importe. El coste de línea es `None` cuando el producto no está en `costes_bar.json`. `minutos_mesa` va de `abierta_en` al `fecha` del ticket, o a ahora. `minutos_servicio` va del primer evento `añadir` a ese mismo fin.
 
-Al añadir un control, ponle etiqueta visible y `help`. El foco de teclado ya tiene un borde en el CSS de cabecera.
+`kpis.calcular` no inventa cifras:
 
-## 10. Qué no hay que hacer
+| Indicador | Cálculo | Si falta el dato |
+| --- | --- | --- |
+| Ticket medio | Ventas / comensales, también por zona | `None` si no hay comensales |
+| Coste de producto | Coste conocido / venta de esas líneas | Fuera las líneas con coste `None`. Referencia en pantalla: 25–30 % |
+| RevPASH | Ventas / (asientos × horas). La hora es `max(minutos, 1) / 60` | La mesa sin asientos no entra |
+| Margen | Subtotal − coste, por producto | Igual: sin coste no entra |
+| Rotación | Media de `minutos_mesa` | — |
+| Tiempo de la cuenta | Media de `minutos_servicio` | No es el tiempo de cocina |
+| Ocupación terraza | Mesas de terraza con comensales / mesas de terraza, ahora | `None` si no hay mesas de terraza. No hay clima |
+| Coste de personal | (€/hora × horas de la mesa) / ventas. La cuenta entera se atribuye al barman del ticket | Tarifa vacía no suma euros. Referencia: 30–35 % |
+| Ventas por hora | Venta atribuida / horas de mesa abierta | — |
+| Rotación de personal | Bajas del periodo / plantilla media | Las altas iniciales, si el fichero no existía, van fechadas el 2020-01-01 para no contar como contrataciones de hoy |
+| Retención | Nombres en 2 o más cuentas / nombres distintos, sin distinguir mayúsculas | No hay id de cliente |
+| Quejas | Incidencias del periodo / cuentas | Solo el botón de Ticket, no un `eliminar` |
+
+El periodo **Hoy** es un `timedelta` de 1 día, no el día natural. **Todo** pasa `dias=None`.
+
+`registrar_personal("alta"|"baja")` se llama al añadir o quitar un barman. `registrar_incidencia` suma el contador de la mesa y añade una fila en `incidencias_bar.json`. Exige barman.
+
+La sesión de administrador es `st.session_state.admin_ok`. La pestaña Panel solo se añade si `es_admin()`. El PIN se compara en claro con `administrador_pin`; no hay hash.
+
+## 10. Interfaz
+
+Pestañas, en este orden: Mesas, Pedido, Ticket, Menú. **Panel** se añade al final solo con la sesión de administrador abierta. La barra lateral no es una pestaña: identidad, administrador, marca, accesibilidad, WhatsApp, datos fiscales y acciones rápidas de mesas.
+
+`exigir_barman` devuelve falso y muestra un aviso si no hay barman. Lo usan las consumiciones, la emisión del ticket y el registro de quejas.
+
+Al añadir un control, ponle etiqueta visible y `help`. En controles nuevos usa `width="stretch"`; `use_container_width` está en desuso. El foco de teclado ya tiene un borde en el CSS de cabecera.
+
+## 11. Qué no hay que hacer
 
 - No guardes precios como `float`.
 - No incrementes `proximo_numero_ticket` al generar el PDF. Solo al emitir una huella nueva.
 - No vuelvas a meter JSON con `ñ` u `ó` en el QR si el lector del bar las muestra mal.
-- No des por hecho un usuario y una contraseña. Identificarse es elegir un nombre de la lista.
+- El barman sigue eligiéndose por nombre, sin PIN. El PIN solo abre el panel y no debe quedar escrito en el código ni en un commit.
 - No hay verificación del QR en un servidor. El código solo lleva el texto del ticket.
+- No rellenes un indicador con una cifra de ejemplo si falta el coste, la tarifa, la zona o la reseña.
+- No hagas `import bar` desde `dashboard.py`.
 
-## 11. Pruebas
+## 12. Pruebas
 
 No hay suite automática. Para un cambio de ticket:
 
@@ -176,4 +223,6 @@ No hay suite automática. Para un cambio de ticket:
 5. Cambia una cantidad, emite y comprueba que el número sí sube.
 6. Escanea el QR del PDF nuevo, en el móvil y, si puedes, en un papel de 80 mm.
 
-`ticket_fiscal.py` se puede ejercitar sin Streamlit importando `desglose_iva`, `texto_qr` y `generar_pdf_ticket`.
+Para el panel: entra con el PIN, abre **Panel** y comprueba que ticket medio, RevPASH y rotación salen de la mesa abierta, y que coste de producto y reseñas quedan en blanco hasta que se informen.
+
+`ticket_fiscal.py` se puede ejercitar sin Streamlit importando `desglose_iva`, `texto_qr` y `generar_pdf_ticket`. `kpis.calcular` también, pasándole listas de cuentas.
