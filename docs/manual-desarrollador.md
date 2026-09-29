@@ -1,6 +1,6 @@
 # Manual de desarrollador
 
-La aplicación es un proceso Streamlit. No hay base de datos ni API. El estado compartido vive en JSON junto a `bar.py`. El estado de cada navegador (barman elegido, mesa y comensal activos) vive en `st.session_state`.
+La aplicación es un proceso Streamlit. No hay base de datos. El estado compartido vive en JSON junto a `bar.py`, en un ordenador del bar. Los demás ordenadores leen y escriben esos ficheros por HTTP en el puerto 8765. El estado de cada navegador (barman elegido, mesa y comensal activos) vive en `st.session_state`.
 
 ## 1. Entorno
 
@@ -27,6 +27,8 @@ En Windows el PDF usa Arial (`%WINDIR%\Fonts\arial.ttf` y `arialbd.ttf`) para ti
 
 ```text
 bar.py              Interfaz, mesas, pedidos, WhatsApp, emisión del número, archivo de cuentas
+almacen.py          Lectura y escritura de los JSON, en disco o por HTTP
+servidor_datos.py   Publica esos JSON en el puerto 8765. No importa bar.py
 dashboard.py        Pestaña Panel. No importa bar.py: lo toma del proceso ya cargado
 kpis.py             Cálculo de indicadores, sin Streamlit
 ticket_fiscal.py    IVA, huella, texto del QR, PDF
@@ -46,7 +48,9 @@ assets/marca_bar.*  Logo (no se versiona)
 
 `pandas` llega con Streamlit y solo lo usa el panel para los gráficos. No está en `requirements.txt` por separado.
 
-Cada rerun de Streamlit vuelve a leer configuración, costes y mesas del disco (`init_state`). Así, dos móviles que apuntan al mismo proceso ven los cambios del otro en la siguiente interacción. El barman activo y la sesión de administrador no se comparten: son de la sesión del navegador.
+Cada rerun de Streamlit vuelve a leer configuración, carta, costes y mesas (`init_state`), del disco o del ordenador indicado en `conexion_bar.json`. Así, dos pantallas ven los cambios de la otra en la siguiente interacción. El barman activo y la sesión de administrador no se comparten: son de la sesión del navegador.
+
+Si una lectura falla, `almacen_error` impide guardar en esa ejecución. Si no, una carta o unas mesas vacías por corte de red sustituirían a las del otro ordenador.
 
 ## 3. Configuración
 
@@ -132,7 +136,7 @@ Los precios del menú son IVA incluido. `desglose_iva` saca la base como `total 
 
 1. Calcula la huella.
 2. Si la mesa ya tiene un `ticket_fiscal` con esa huella, lo reutiliza.
-3. Si no, `siguiente_numero_ticket` lee `proximo_numero_ticket`, guarda el siguiente y forma `SERIE-00001`.
+3. Si no, `siguiente_numero_ticket` llama a `almacen.reservar_numero`. El ordenador que guarda los datos incrementa `proximo_numero_ticket` dentro de un candado y devuelve `SERIE-00001`. No uses el número que hubiera en la sesión: otra pantalla puede haberlo gastado.
 4. Guarda `datos` en la mesa y registra el evento `ticket_fiscal`.
 
 La primera pulsación de **Ticket térmico** o **Factura A4** emite y hace `st.rerun()`. En la siguiente ejecución ya existen los bytes del PDF y Streamlit puede pintar `download_button`. Los dos formatos se generan a partir de los mismos `datos`.
@@ -194,25 +198,36 @@ El periodo **Hoy** es un `timedelta` de 1 día, no el día natural. **Todo** pas
 
 La sesión de administrador es `st.session_state.admin_ok`. La pestaña Panel solo se añade si `es_admin()`. El PIN se compara en claro con `administrador_pin`; no hay hash.
 
-## 10. Interfaz
+## 10. Varios ordenadores
 
-Pestañas, en este orden: Mesas, Pedido, Ticket, Menú. **Panel** se añade al final solo con la sesión de administrador abierta. La barra lateral no es una pestaña: identidad, administrador, marca, accesibilidad, WhatsApp, datos fiscales y acciones rápidas de mesas.
+`almacen.es_remoto()` es verdadero si existe `BAR_SERVIDOR` o si `conexion_bar.json` tiene `servidor` con una URL. Ese fichero no se versiona. `BAR_PUERTO` cambia el puerto (por defecto 8765). `BAR_SIN_SERVIDOR` impide abrir el puerto, útil en pruebas.
+
+El proceso que no es cliente llama a `servidor_datos.asegurar_servidor()` y escucha en `0.0.0.0`. Si luego pasa a ser cliente, cierra ese puerto para no seguir sirviendo sus JSON viejos. `almacen.py` y `servidor_datos.py` no importan `bar.py`.
+
+`escribir` de `config_bar.json` se queda con el `proximo_numero_ticket` más alto, salvo `forzar_numero=True`. Ese flag solo lo usa **Guardar datos fiscales**, que es la forma de fijar el siguiente número a mano. El resto de `set_config` no puede atrasar el correlativo.
+
+El logo del otro ordenador se copia a `assets/` para que el PDF siga teniendo una ruta local. Una copia de logo que no llega no bloquea el resto de guardados.
+
+## 11. Interfaz
+
+Pestañas, en este orden: Mesas, Pedido, Ticket, Menú. **Panel** se añade al final solo con la sesión de administrador abierta. La barra lateral no es una pestaña: ordenadores del bar, identidad, administrador, marca, accesibilidad, WhatsApp, datos fiscales y acciones rápidas de mesas.
 
 `exigir_barman` devuelve falso y muestra un aviso si no hay barman. Lo usan las consumiciones, la emisión del ticket y el registro de quejas.
 
 Al añadir un control, ponle etiqueta visible y `help`. En controles nuevos usa `width="stretch"`; `use_container_width` está en desuso. El foco de teclado ya tiene un borde en el CSS de cabecera.
 
-## 11. Qué no hay que hacer
+## 12. Qué no hay que hacer
 
 - No guardes precios como `float`.
 - No incrementes `proximo_numero_ticket` al generar el PDF. Solo al emitir una huella nueva.
 - No vuelvas a meter JSON con `ñ` u `ó` en el QR si el lector del bar las muestra mal.
 - El barman sigue eligiéndose por nombre, sin PIN. El PIN solo abre el panel y no debe quedar escrito en el código ni en un commit.
-- No hay verificación del QR en un servidor. El código solo lleva el texto del ticket.
+- No hay verificación del QR en un servidor. El puerto 8765 solo comparte los JSON. El código QR sigue siendo el texto del ticket.
+- No bajes `proximo_numero_ticket` en un `set_config` normal. Para fijarlo hace falta `forzar_numero=True`.
 - No rellenes un indicador con una cifra de ejemplo si falta el coste, la tarifa, la zona o la reseña.
 - No hagas `import bar` desde `dashboard.py`.
 
-## 12. Pruebas
+## 13. Pruebas
 
 No hay suite automática. Para un cambio de ticket:
 

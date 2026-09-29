@@ -12,6 +12,7 @@ ventas_bar.json
 costes_bar.json
 personal_bar.json
 incidencias_bar.json
+conexion_bar.json
 assets/
 *.xlsx
 .DS_Store

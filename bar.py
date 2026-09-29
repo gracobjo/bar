@@ -8,6 +8,8 @@ from pathlib import Path
 
 import streamlit as st
 
+import almacen
+import servidor_datos
 from ticket_fiscal import IVA_OPCIONES, desglose_iva, generar_pdf_ticket, huella_cuenta
 
 # ============================================
@@ -122,13 +124,53 @@ st.markdown(
 )
 
 
+def _texto_o_none(ruta: Path) -> str | None:
+    try:
+        return almacen.leer(ruta.name)
+    except almacen.ErrorAlmacen as exc:
+        st.session_state.almacen_error = str(exc)
+        return None
+
+
+def _puede_guardar() -> bool:
+    return not st.session_state.get("almacen_error")
+
+
+def _volcar(ruta: Path, texto: str, forzar_numero: bool = False) -> None:
+    if not _puede_guardar():
+        return
+    try:
+        almacen.escribir(ruta.name, texto, forzar_numero=forzar_numero)
+    except almacen.ErrorAlmacen as exc:
+        st.session_state.almacen_error = str(exc)
+
+
+def sincronizar_logo() -> None:
+    """Si los datos viven en otro ordenador, deja aquí una copia del logo para el PDF."""
+    if not almacen.es_remoto():
+        return
+    try:
+        par = almacen.leer_logo()
+    except almacen.ErrorAlmacen:
+        return
+    if not par:
+        return
+    nombre, datos = par
+    MARCA_DIR.mkdir(parents=True, exist_ok=True)
+    for viejo in MARCA_DIR.glob("marca_bar.*"):
+        if viejo.name != nombre:
+            viejo.unlink(missing_ok=True)
+    (MARCA_DIR / nombre).write_bytes(datos)
+
+
 # ============================================
 # PERSISTENCIA DEL MENÚ Y CONFIGURACIÓN
 # ============================================
 def cargar_menu() -> dict[str, Decimal]:
-    if MENU_FILE.exists():
+    texto = _texto_o_none(MENU_FILE)
+    if texto:
         try:
-            raw = json.loads(MENU_FILE.read_text(encoding="utf-8"))
+            raw = json.loads(texto)
             return {nombre: Decimal(str(precio)) for nombre, precio in raw.items()}
         except (json.JSONDecodeError, InvalidOperation, TypeError, ValueError):
             pass
@@ -137,10 +179,7 @@ def cargar_menu() -> dict[str, Decimal]:
 
 def guardar_menu(menu: dict[str, Decimal]) -> None:
     payload = {nombre: f"{precio:.2f}" for nombre, precio in menu.items()}
-    MENU_FILE.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    _volcar(MENU_FILE, json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 def normalizar_nif(valor: str) -> str:
@@ -217,9 +256,10 @@ def normalizar_config(config: dict | None) -> dict:
 
 def cargar_config() -> dict:
     config = dict(CONFIG_DEFAULT)
-    if CONFIG_FILE.exists():
+    texto = _texto_o_none(CONFIG_FILE)
+    if texto:
         try:
-            raw = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            raw = json.loads(texto)
             if isinstance(raw, dict):
                 config.update(raw)
         except (json.JSONDecodeError, TypeError, ValueError):
@@ -227,11 +267,12 @@ def cargar_config() -> dict:
     return normalizar_config(config)
 
 
-def guardar_config(config: dict) -> None:
+def guardar_config(config: dict, forzar_numero: bool = False) -> None:
     payload = normalizar_config(config)
-    CONFIG_FILE.write_text(
+    _volcar(
+        CONFIG_FILE,
         json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+        forzar_numero=forzar_numero,
     )
 
 
@@ -297,20 +338,31 @@ def png_logo_marca() -> bytes | None:
 
 
 def guardar_imagen_marca(archivo) -> str:
-    """Guarda la imagen subida en assets/ y devuelve el nombre de archivo."""
-    MARCA_DIR.mkdir(parents=True, exist_ok=True)
+    """Guarda la imagen subida y devuelve el nombre de archivo."""
     extension = Path(archivo.name).suffix.lower()
     if extension not in EXTENSIONES_IMAGEN:
         raise ValueError("Formato no válido. Usa PNG, JPG, WEBP o GIF.")
-    for viejo in MARCA_DIR.glob("marca_bar.*"):
-        viejo.unlink(missing_ok=True)
-    destino = MARCA_DIR / f"marca_bar{extension}"
-    destino.write_bytes(archivo.getvalue())
-    return destino.name
+    nombre = f"marca_bar{extension}"
+    datos = archivo.getvalue()
+    try:
+        almacen.escribir_logo(nombre, datos)
+    except almacen.ErrorAlmacen as exc:
+        st.session_state.almacen_error = str(exc)
+        raise
+    if almacen.es_remoto():
+        MARCA_DIR.mkdir(parents=True, exist_ok=True)
+        for viejo in MARCA_DIR.glob("marca_bar.*"):
+            viejo.unlink(missing_ok=True)
+        (MARCA_DIR / nombre).write_bytes(datos)
+    return nombre
 
 
 def eliminar_imagen_marca() -> None:
-    if MARCA_DIR.exists():
+    try:
+        almacen.borrar_logo()
+    except almacen.ErrorAlmacen as exc:
+        st.session_state.almacen_error = str(exc)
+    if almacen.es_remoto() and MARCA_DIR.exists():
         for viejo in MARCA_DIR.glob("marca_bar.*"):
             viejo.unlink(missing_ok=True)
 
@@ -381,10 +433,11 @@ def normalizar_estructura_mesa(datos, nombre: str = "") -> dict:
 
 
 def cargar_mesas() -> dict:
-    if not MESAS_FILE.exists():
+    texto = _texto_o_none(MESAS_FILE)
+    if not texto:
         return {}
     try:
-        raw = json.loads(MESAS_FILE.read_text(encoding="utf-8"))
+        raw = json.loads(texto)
         if not isinstance(raw, dict):
             return {}
         return {
@@ -396,29 +449,29 @@ def cargar_mesas() -> dict:
 
 
 def guardar_mesas() -> None:
+    if not _puede_guardar():
+        return
     payload = {}
     for nombre, datos in st.session_state.mesas.items():
         mesa = normalizar_estructura_mesa(datos, nombre)
         payload[nombre] = mesa
         st.session_state.mesas[nombre] = mesa
-    MESAS_FILE.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    _volcar(MESAS_FILE, json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 def _leer_lista_json(ruta: Path) -> list:
-    if not ruta.exists():
+    texto = _texto_o_none(ruta)
+    if not texto:
         return []
     try:
-        raw = json.loads(ruta.read_text(encoding="utf-8"))
+        raw = json.loads(texto)
     except (json.JSONDecodeError, TypeError, ValueError):
         return []
     return raw if isinstance(raw, list) else []
 
 
 def _escribir_json(ruta: Path, payload) -> None:
-    ruta.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _volcar(ruta, json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 def cargar_ventas() -> list:
@@ -434,10 +487,11 @@ def cargar_personal() -> list:
 
 
 def cargar_costes() -> dict[str, Decimal]:
-    if not COSTES_FILE.exists():
+    texto = _texto_o_none(COSTES_FILE)
+    if not texto:
         return {}
     try:
-        raw = json.loads(COSTES_FILE.read_text(encoding="utf-8"))
+        raw = json.loads(texto)
     except (json.JSONDecodeError, TypeError, ValueError):
         return {}
     if not isinstance(raw, dict):
@@ -466,7 +520,11 @@ def registrar_personal(accion: str, nombre: str) -> None:
 
 
 def asegurar_personal_inicial() -> None:
-    if PERSONAL_FILE.exists():
+    if st.session_state.get("almacen_error"):
+        return
+    if _texto_o_none(PERSONAL_FILE) is not None:
+        return
+    if st.session_state.get("almacen_error"):
         return
     eventos = [
         {"ts": "2020-01-01 00:00:00", "accion": "alta", "nombre": nombre}
@@ -618,10 +676,16 @@ def es_admin() -> bool:
 
 
 def init_state() -> None:
-    if "menu" not in st.session_state:
-        st.session_state.menu = cargar_menu()
+    copia = {
+        "menu": st.session_state.get("menu"),
+        "costes": st.session_state.get("costes"),
+        "config": st.session_state.get("config"),
+        "mesas": st.session_state.get("mesas"),
+    }
+    st.session_state.almacen_error = ""
+    st.session_state.menu = cargar_menu()
     st.session_state.costes = cargar_costes()
-    # Config y mesas siempre desde disco (varios móviles / barmans)
+    # Config, carta y mesas salen del ordenador que guarda los datos
     st.session_state.config = cargar_config()
     if "pedidos" in st.session_state and st.session_state.pedidos:
         legacy = {
@@ -630,10 +694,15 @@ def init_state() -> None:
             )
         }
         del st.session_state.pedidos
-        if not MESAS_FILE.exists():
+        if _texto_o_none(MESAS_FILE) is None and not st.session_state.get("almacen_error"):
             st.session_state.mesas = legacy
             guardar_mesas()
     st.session_state.mesas = cargar_mesas()
+    if st.session_state.almacen_error:
+        for clave, valor in copia.items():
+            if valor is not None:
+                st.session_state[clave] = valor
+    sincronizar_logo()
     if "mesa_activa" not in st.session_state:
         mesas = list(st.session_state.mesas.keys())
         st.session_state.mesa_activa = mesas[0] if mesas else None
@@ -664,12 +733,12 @@ def set_menu(menu: dict[str, Decimal]) -> None:
     guardar_menu(menu)
 
 
-def set_config(cambios: dict) -> None:
+def set_config(cambios: dict, forzar_numero: bool = False) -> None:
     """Actualiza la configuración fusionando con la actual y persistiendo."""
     actual = dict(st.session_state.config)
     actual.update(cambios)
     st.session_state.config = normalizar_config(actual)
-    guardar_config(st.session_state.config)
+    guardar_config(st.session_state.config, forzar_numero=forzar_numero)
     if st.session_state.get("barman_activo") not in st.session_state.config["barmans"]:
         st.session_state.barman_activo = None
 
@@ -2062,13 +2131,13 @@ def ticket_de_mesa(mesa: str, huella: str) -> dict | None:
 
 
 def siguiente_numero_ticket() -> tuple[str, str, int]:
-    """Reserva el siguiente correlativo (A-00001) y lo guarda en la configuración."""
-    config = st.session_state.config
-    serie = str(config["serie_ticket"])
-    numero = int(config["proximo_numero_ticket"])
-    codigo = f"{serie}-{numero:05d}"
-    set_config({"proximo_numero_ticket": numero + 1})
-    return codigo, serie, numero
+    """Reserva el siguiente correlativo (A-00001) en el ordenador que guarda los datos."""
+    if st.session_state.get("almacen_error"):
+        raise almacen.ErrorAlmacen(str(st.session_state.almacen_error))
+    datos = almacen.reservar_numero()
+    st.session_state.config["proximo_numero_ticket"] = int(datos["proximo"])
+    st.session_state.config["serie_ticket"] = str(datos["serie"])
+    return str(datos["codigo"]), str(datos["serie"]), int(datos["numero"])
 
 
 def emitir_ticket_fiscal(mesa: str, lineas: list[dict], total: Decimal) -> dict:
@@ -2153,8 +2222,12 @@ def ui_ticket_fiscal(mesa: str, pedidos: dict) -> None:
                 help="Asigna el número de ticket y prepara el PDF para impresora de 80 mm.",
             ):
                 if exigir_barman():
-                    emitir_ticket_fiscal(mesa, lineas, total)
-                    st.rerun()
+                    try:
+                        emitir_ticket_fiscal(mesa, lineas, total)
+                    except almacen.ErrorAlmacen as exc:
+                        st.error(str(exc))
+                    else:
+                        st.rerun()
         with c2:
             if st.button(
                 "📄 Factura A4",
@@ -2163,8 +2236,12 @@ def ui_ticket_fiscal(mesa: str, pedidos: dict) -> None:
                 help="Asigna el número de ticket y prepara el PDF en formato A4.",
             ):
                 if exigir_barman():
-                    emitir_ticket_fiscal(mesa, lineas, total)
-                    st.rerun()
+                    try:
+                        emitir_ticket_fiscal(mesa, lineas, total)
+                    except almacen.ErrorAlmacen as exc:
+                        st.error(str(exc))
+                    else:
+                        st.rerun()
         return
 
     logo = png_logo_marca()
@@ -2206,13 +2283,68 @@ def ui_ticket_fiscal(mesa: str, pedidos: dict) -> None:
 # APP
 # ============================================
 init_state()
+servidor_datos.asegurar_servidor()
 
 with st.sidebar:
     logo = ruta_imagen_marca()
     if logo:
         st.image(str(logo), use_container_width=True)
     st.title(nombre_del_bar())
-    st.caption("Varios barmans · mesas compartidas · trazabilidad con fecha/hora.")
+    if almacen.es_remoto():
+        st.caption(f"Datos y tickets en {almacen.url_configurada()}.")
+    else:
+        st.caption("Este ordenador guarda las mesas y el número de ticket.")
+    if st.session_state.get("almacen_error"):
+        st.error(st.session_state.almacen_error)
+    if servidor_datos.error_arranque() and not almacen.es_remoto():
+        st.warning(servidor_datos.error_arranque())
+
+    with st.expander("Ordenadores del bar", expanded=almacen.es_remoto()):
+        if almacen.es_remoto():
+            st.caption(
+                "Las mesas, la carta y el correlativo del ticket salen del otro ordenador. "
+                "Este no usa sus JSON para la cuenta."
+            )
+            if st.button(
+                "Guardar los datos en este ordenador",
+                width="stretch",
+                help="Deja de usar el otro ordenador. A partir de aquí los ficheros locales mandan.",
+            ):
+                almacen.guardar_url("")
+                st.session_state.pop("menu", None)
+                st.rerun()
+        else:
+            st.caption(
+                "Abre la app en los otros ordenadores y pega allí esta dirección. "
+                "Así comparten mesas y no repiten el número de ticket."
+            )
+            st.code(almacen.url_publica(), language=None)
+            st.caption(
+                "Si Windows pregunta, permite el acceso en redes privadas para el puerto "
+                f"{almacen.PUERTO}."
+            )
+            url_otro = st.text_input(
+                "Dirección del ordenador que ya guarda los datos",
+                placeholder="http://192.168.1.20:8765",
+                help="Solo en el ordenador nuevo. El que ya tiene las cuentas debe quedarse como está.",
+                key="input_servidor_datos",
+            )
+            if st.button(
+                "Usar ese ordenador",
+                width="stretch",
+                help="Las cuentas y el próximo ticket pasan a ser los de esa dirección.",
+            ):
+                nombre = almacen.probar(url_otro)
+                if not nombre:
+                    st.error(
+                        "No responde. En ese ordenador tiene que estar abierta la app "
+                        "y el puerto permitido en la red privada."
+                    )
+                else:
+                    almacen.guardar_url(url_otro)
+                    st.session_state.pop("menu", None)
+                    st.success(f"Conectado con {nombre}.")
+                    st.rerun()
 
     with st.expander(
         "Quién soy (barman)",
@@ -2555,7 +2687,8 @@ with st.sidebar:
                     "iva_porcentaje": int(iva_input),
                     "serie_ticket": serie_input,
                     "proximo_numero_ticket": int(numero_input),
-                }
+                },
+                forzar_numero=True,
             )
             guardado = st.session_state.config
             st.success(
@@ -2624,7 +2757,7 @@ if logo_principal:
         st.markdown(f"## {nombre_del_bar()}")
         st.caption(
             "Navegación: identifícate como barman → Mesas → Pedido → Ticket. "
-            "Menú y marca en la barra lateral. Varios móviles comparten las mesas."
+            "Menú y marca en la barra lateral. Los ordenadores del bar comparten mesas y número de ticket."
         )
 else:
     st.markdown(f"## {nombre_del_bar()}")

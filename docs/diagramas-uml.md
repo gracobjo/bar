@@ -263,27 +263,34 @@ flowchart LR
   fiscal --> papel[Impresora 80 mm o A4]
 ```
 
-WhatsApp no recibe una llamada del servidor. `bar.py` solo construye una URL `api.whatsapp.com` y el navegador la abre. La impresora tampoco está conectada al proceso: el barman descarga el PDF y lo imprime con el sistema. `dashboard.py` no importa `bar.py`: usa el módulo que Streamlit ya está ejecutando.
+WhatsApp no recibe una llamada del servidor. `bar.py` solo construye una URL `api.whatsapp.com` y el navegador la abre. La impresora tampoco está conectada al proceso: el barman descarga el PDF y lo imprime con el sistema. `dashboard.py` no importa `bar.py`: usa el módulo que Streamlit ya está ejecutando. La carta, las mesas y el número de ticket pasan por `almacen.py`. En el ordenador que guarda los ficheros, `servidor_datos.py` los publica en el puerto 8765.
 
 ## 9. Despliegue
 
 ```mermaid
 flowchart TB
-  subgraph local [Un ordenador del bar]
+  subgraph host [Ordenador que guarda los datos]
     venv[Python y .venv]
     st[streamlit run bar.py]
+    srv[Puerto 8765]
     json[JSON y assets]
     venv --> st
     st --> json
+    st --> srv
+    srv --> json
+  end
+  subgraph otro [Otro ordenador del bar]
+    st2[streamlit run bar.py]
   end
   movil1[Movil del barman 1]
   movil2[Movil del barman 2]
   termica[Impresora termica 80 mm]
   a4[Impresora A4]
+  st2 -->|http://IP:8765| srv
   movil1 -->|misma red| st
-  movil2 -->|misma red| st
+  movil2 -->|misma red| st2
   movil1 -->|PDF| termica
   movil1 -->|PDF| a4
 ```
 
-No hay servidor de base de datos ni de verificación de QR. Si se arranca la aplicación en dos ordenadores distintos, cada uno tiene sus propios JSON y sus propios números de ticket.
+Un ordenador del bar guarda los JSON y el correlativo del ticket, y los ofrece por el puerto 8765. El resto abre la aplicación, pega esa dirección en **Ordenadores del bar** y usa los mismos ficheros y el mismo número. El QR no es una web de comprobación: sigue siendo el texto del ticket. No hay un servicio que responda «ticket válido».

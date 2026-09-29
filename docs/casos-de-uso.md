@@ -234,6 +234,25 @@ Actor principal de todos los casos: el barman, salvo que se diga otra cosa. El s
 
 - 1a. En **Acceso de administrador** cambia el PIN. Si el actual no coincide o el nuevo tiene menos de 4 caracteres, el sistema no lo guarda.
 
+## CU-14 Unir otro ordenador
+
+**Actor:** quien instala la aplicación en un segundo ordenador del bar.
+
+**Objetivo:** que los dos ordenadores usen las mismas mesas y el mismo número de ticket.
+
+**Precondición:** en el ordenador que ya tiene las cuentas, la aplicación está abierta. Los dos están en la misma red.
+
+**Flujo principal**
+
+1. En el ordenador de los datos, abre **Ordenadores del bar** y copia la dirección `http://IP:8765`.
+2. En el ordenador nuevo, pega esa dirección y pulsa **Usar ese ordenador**.
+3. El sistema comprueba que el otro responde y, a partir de ahí, lee y escribe allí la carta, las mesas, el archivo y el correlativo.
+
+**Alternativas**
+
+- 2a. La dirección no responde. El sistema avisa de que la aplicación del otro ordenador tiene que estar abierta y de que Windows debe permitir el puerto 8765 en la red privada. Los ficheros locales no se tocan.
+- 3a. **Guardar los datos en este ordenador** corta la unión. Cada uno vuelve a sus JSON. Los números de ticket pueden coincidir si se emite en los dos.
+
 ## Resumen
 
 ```mermaid
@@ -255,6 +274,7 @@ flowchart LR
     cu11([CU-11 Entrar al panel])
     cu12([CU-12 Indicadores])
     cu13([CU-13 Datos del panel])
+    cu14([CU-14 Unir otro ordenador])
   end
   barman --> cu01
   barman --> cu02
@@ -276,6 +296,7 @@ flowchart LR
   cu06 --> cu07
   cu11 --> cu12
   cu07 --> cu12
+  barman --> cu14
 ```
 
 Las flechas entre casos indican el orden habitual, no una inclusión formal de UML.

@@ -15,6 +15,19 @@ streamlit run bar.py
 
 Se abre en el navegador, normalmente en `http://localhost:8501`. En otros móviles de la misma red hay que usar la dirección del ordenador donde corre Streamlit.
 
+### 1.1 Varios ordenadores
+
+El ordenador que ya tiene las cuentas es el que guarda los datos. En la barra lateral, **Ordenadores del bar** muestra una dirección como `http://192.168.1.20:8765`. Déjala como está.
+
+En el ordenador nuevo:
+
+1. Arranca la aplicación.
+2. Abre **Ordenadores del bar**.
+3. Pega esa dirección y pulsa **Usar ese ordenador**.
+4. Si no responde, en el ordenador de los datos la aplicación tiene que estar abierta. Si Windows pregunta, permite el puerto 8765 en la red privada.
+
+A partir de ahí los dos ven las mismas mesas, la misma carta y el mismo número de ticket. **Guardar los datos en este ordenador** corta esa unión: cada uno vuelve a sus ficheros locales y los números pueden repetirse. No mezcles las dos carpetas a mano.
+
 ## 2. Configuración inicial
 
 Se hace una vez, en la barra lateral. Después solo se cambia si cambian los datos del bar.
@@ -202,7 +215,7 @@ Arriba se elige el periodo: **Hoy** (las últimas 24 horas), **7 días**, **30 d
 
 ## 6. Copias de seguridad
 
-Copia de vez en cuando estos archivos, que están en la carpeta del proyecto y no van al repositorio:
+Copia de vez en cuando estos archivos del ordenador que guarda los datos. Están en la carpeta del proyecto y no van al repositorio. En un ordenador conectado a otro, la copia útil es la del que muestra la dirección `http://IP:8765`:
 
 - `config_bar.json`: bar, barmans, WhatsApp, datos fiscales, próximo número de ticket, usuario y PIN del administrador, €/hora y notas de reseñas.
 - `mesas_bar.json`: mesas abiertas, pedidos, historial y tickets ya emitidos.

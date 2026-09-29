@@ -2,7 +2,7 @@
 
 **Sistema:** Cuenta del Bar  
 **Tipo:** aplicación web local (Python, Streamlit)  
-**Usuarios:** barmans del mismo local, cada uno con su móvil, contra un único proceso y unos únicos ficheros JSON
+**Usuarios:** barmans del mismo local, cada uno con su móvil. Los ficheros y el número de ticket viven en un ordenador del bar; el resto de ordenadores de la red se conectan a él.
 
 ## 1. Objetivo
 
@@ -117,6 +117,7 @@ No entra:
 | RF-45 | El administrador anota en el panel los €/hora y las notas de Google y TripAdvisor, de 0 a 5. La aplicación no consulta esas webs. |
 | RF-46 | Un barman identificado puede registrar una queja o error de comanda, con nota opcional. Quitar una consumición no cuenta como queja. |
 | RF-47 | Alta y baja de barman quedan en `personal_bar.json`. El PIN se puede cambiar desde el panel y solo se guarda en `config_bar.json`. |
+| RF-48 | Un ordenador guarda los JSON y publica la dirección `http://IP:8765`. Otro ordenador de la red puede usar esa dirección y comparte carta, mesas, archivo, logo y el correlativo del ticket. |
 
 ## 5. Requisitos no funcionales
 
@@ -125,11 +126,11 @@ No entra:
 | RNF-01 | La interfaz es una web usable con el dedo en un móvil y con teclado en un ordenador. |
 | RNF-02 | Los controles tienen texto visible. El foco de teclado se ve. Los avisos salen por escrito. |
 | RNF-03 | Los importes no acumulan error de céntimos. |
-| RNF-04 | Configuración, carta, mesas y logo se guardan en ficheros locales, no en un servicio externo. |
+| RNF-04 | Configuración, carta, mesas y logo se guardan en los ficheros del ordenador que hace de almacén, no en un servicio de internet. |
 | RNF-05 | Esos ficheros de datos no se suben al repositorio. |
 | RNF-06 | El PDF térmico cabe en un rollo de 80 mm. El A4 cabe en una hoja ISO A4. |
 | RNF-07 | El texto del PDF conserva tildes y eñe cuando el sistema tiene Arial. |
-| RNF-08 | Dos navegadores contra el mismo proceso comparten mesas, carta y archivo de cuentas. Cada uno conserva su barman y, si entra, su sesión de administrador. |
+| RNF-08 | Dos navegadores, en el mismo proceso o en otro ordenador conectado al puerto 8765, comparten mesas, carta y archivo de cuentas. Cada uno conserva su barman y, si entra, su sesión de administrador. |
 | RNF-09 | El PIN del administrador no se sube al repositorio. |
 | RNF-10 | Un indicador sin dato de origen se muestra vacío. No se sustituye por una cifra de ejemplo. |
 
@@ -160,6 +161,7 @@ El barman activo, la mesa activa, el comensal activo y la sesión de administrad
 
 ## 8. Restricciones
 
-- Un solo proceso Streamlit y una sola carpeta de JSON. No hay sincronización entre dos ordenadores.
+- Los JSON viven en un solo ordenador. Los demás no guardan una copia de trabajo: leen y escriben en ese. Una lectura fallida no se vuelve a guardar como fichero vacío.
+- El número de ticket solo avanza dentro del candado de ese ordenador. Guardar la configuración no baja el correlativo, salvo que se pulse **Guardar datos fiscales**.
 - Quien abre la URL puede elegir cualquier barman de la lista. El panel exige el PIN de ese ordenador.
 - La impresión física depende de la impresora y del diálogo del sistema. La aplicación solo entrega el PDF con el tamaño de página pedido.
