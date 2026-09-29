@@ -27,6 +27,7 @@ No entra:
 - Cocina, stock, proveedores o el clima de la terraza.
 - Lectura automática de reseñas en Google o TripAdvisor.
 - Un servidor que valide el QR y responda «ticket válido».
+- Publicarla en un alojamiento sin proceso continuo ni disco duradero (por ejemplo Vercel).
 - Factura electrónica Verifactu o TicketBAI.
 - Impresora de 58 mm sin cambiar medidas en el código.
 
@@ -161,7 +162,7 @@ El barman activo, la mesa activa, el comensal activo y la sesión de administrad
 
 ## 8. Restricciones
 
-- Los JSON viven en un solo ordenador. Los demás no guardan una copia de trabajo: leen y escriben en ese. Una lectura fallida no se vuelve a guardar como fichero vacío.
+- Los JSON viven en un solo ordenador, el del bar o una máquina con disco que sobrevive al reinicio. Los demás no guardan una copia de trabajo: leen y escriben en ese. Una lectura fallida no se vuelve a guardar como fichero vacío.
 - El número de ticket solo avanza dentro del candado de ese ordenador. Guardar la configuración no baja el correlativo, salvo que se pulse **Guardar datos fiscales**.
 - Quien abre la URL puede elegir cualquier barman de la lista. El panel exige el PIN de ese ordenador.
 - La impresión física depende de la impresora y del diálogo del sistema. La aplicación solo entrega el PDF con el tamaño de página pedido.

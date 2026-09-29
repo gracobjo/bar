@@ -208,7 +208,21 @@ El proceso que no es cliente llama a `servidor_datos.asegurar_servidor()` y escu
 
 El logo del otro ordenador se copia a `assets/` para que el PDF siga teniendo una ruta local. Una copia de logo que no llega no bloquea el resto de guardados.
 
-## 11. Interfaz
+## 11. Persistencia y publicación
+
+`almacen.RAIZ` es la carpeta de `almacen.py`. Ahí están los siete JSON de `FICHEROS` y `assets/marca_bar.*`. `conexion_bar.json` solo dice si este proceso es cliente de otro ordenador. El barman activo y `admin_ok` viven en `st.session_state` y no se escriben.
+
+Publicar exige un proceso que no se apague y un disco que sobreviva al reinicio. Si el disco es efímero, el siguiente arranque nace sin mesas y el correlativo puede repetirse.
+
+| Opción | Qué implica |
+| --- | --- |
+| El ordenador del bar | El despliegue actual. Streamlit en el puerto 8501 para los navegadores de la red. El puerto 8765 solo sirve para que otro proceso de la app use los mismos ficheros. |
+| Un VPS, u otra máquina con disco duradero | Un solo `streamlit run bar.py` en esa máquina. Los JSON se quedan en su disco. El acceso desde fuera del local es llegar a ese proceso, no cambiar de formato de datos. |
+| Vercel u otro alojamiento sin proceso continuo ni disco | No encaja. El sistema de ficheros no conserva los JSON y no hay un servidor Streamlit residente. El puerto 8765 tampoco tiene donde quedarse escuchando. |
+
+Streamlit no es una función que se invoca y termina: mantiene la sesión del navegador entre reruns. Por eso el destino tiene que ser un proceso largo, no un estático ni una función serverless.
+
+## 12. Interfaz
 
 Pestañas, en este orden: Mesas, Pedido, Ticket, Menú. **Panel** se añade al final solo con la sesión de administrador abierta. La barra lateral no es una pestaña: ordenadores del bar, identidad, administrador, marca, accesibilidad, WhatsApp, datos fiscales y acciones rápidas de mesas.
 
@@ -216,7 +230,7 @@ Pestañas, en este orden: Mesas, Pedido, Ticket, Menú. **Panel** se añade al f
 
 Al añadir un control, ponle etiqueta visible y `help`. En controles nuevos usa `width="stretch"`; `use_container_width` está en desuso. El foco de teclado ya tiene un borde en el CSS de cabecera.
 
-## 12. Qué no hay que hacer
+## 13. Qué no hay que hacer
 
 - No guardes precios como `float`.
 - No incrementes `proximo_numero_ticket` al generar el PDF. Solo al emitir una huella nueva.
@@ -226,8 +240,9 @@ Al añadir un control, ponle etiqueta visible y `help`. En controles nuevos usa 
 - No bajes `proximo_numero_ticket` en un `set_config` normal. Para fijarlo hace falta `forzar_numero=True`.
 - No rellenes un indicador con una cifra de ejemplo si falta el coste, la tarifa, la zona o la reseña.
 - No hagas `import bar` desde `dashboard.py`.
+- No publiques la app en un alojamiento de disco efímero. Los JSON y el correlativo tienen que sobrevivir al reinicio del proceso.
 
-## 13. Pruebas
+## 14. Pruebas
 
 No hay suite automática. Para un cambio de ticket:
 

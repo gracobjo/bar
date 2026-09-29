@@ -228,7 +228,22 @@ Copia de vez en cuando estos archivos del ordenador que guarda los datos. Están
 
 Si se pierde `config_bar.json`, el próximo ticket puede repetir un número ya usado y hay que volver a crear el PIN. Si se pierde `ventas_bar.json`, el panel solo ve las mesas que sigan abiertas.
 
-## 7. Atajos de uso
+El barman elegido y la sesión de administrador no están en esos ficheros. Cada teléfono los recuerda por su cuenta.
+
+## 7. Dónde publicarla
+
+La aplicación tiene que quedarse encendida y el disco donde están los JSON no puede borrarse al reiniciar. Si el disco se vacía, se pierden las mesas y el próximo ticket puede repetir un número.
+
+Hay dos sitios que cumplen eso:
+
+1. **Este ordenador del bar.** Es el modo actual. Los móviles de la misma red abren la dirección de Streamlit (la de `http://localhost:8501`, cambiando `localhost` por la IP de este ordenador). Otro ordenador del local se une con la dirección del puerto 8765, como en el apartado 1.1.
+2. **Una máquina pequeña siempre encendida, con disco propio** (un VPS). Ahí se copia el proyecto, se arranca `streamlit run bar.py` y los JSON quedan en esa máquina. Los móviles pueden entrar desde fuera del local si esa dirección es accesible en internet.
+
+No vale un alojamiento en el que el programa se apaga entre visitas y el disco se tira en cada arranque. Vercel es de ese tipo: no mantiene el proceso de Streamlit ni estos JSON. Publicar allí no sustituye al ordenador que guarda los datos.
+
+Salir a internet es abrir el acceso a la aplicación que ya guarda los ficheros. No consiste en mover los JSON a otro servicio.
+
+## 8. Atajos de uso
 
 - Tab y Mayús+Tab mueven el foco. El control enfocado se marca con un borde.
 - Los botones tienen texto, no solo un icono.

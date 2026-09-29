@@ -294,3 +294,5 @@ flowchart TB
 ```
 
 Un ordenador del bar guarda los JSON y el correlativo del ticket, y los ofrece por el puerto 8765. El resto abre la aplicación, pega esa dirección en **Ordenadores del bar** y usa los mismos ficheros y el mismo número. El QR no es una web de comprobación: sigue siendo el texto del ticket. No hay un servicio que responda «ticket válido».
+
+Ese ordenador puede ser el del local o una máquina con disco duradero (un VPS) donde el proceso sigue encendido. Un alojamiento que borra el disco al arrancar, como Vercel, no sustituye a ese nodo: no conserva los JSON ni mantiene Streamlit en marcha.
