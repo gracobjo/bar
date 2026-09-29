@@ -1,3 +1,4 @@
+import io
 import json
 import re
 import urllib.parse
@@ -6,6 +7,8 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import streamlit as st
+
+from ticket_fiscal import IVA_OPCIONES, desglose_iva, generar_pdf_ticket, huella_cuenta
 
 # ============================================
 # CONFIGURACIÓN
@@ -28,6 +31,12 @@ CONFIG_DEFAULT = {
     "nombre_bar": "Cuenta del Bar",
     "imagen_marca": "",  # Nombre de archivo dentro de assets/, vacío si no hay
     "barmans": [],  # Nombres de los barmans que usan la app en el móvil
+    "razon_social": "",
+    "nif": "",
+    "direccion_fiscal": "",
+    "iva_porcentaje": 10,  # IVA incluido en los precios del menú
+    "serie_ticket": "A",
+    "proximo_numero_ticket": 1,
 }
 
 EXTENSIONES_IMAGEN = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -122,56 +131,77 @@ def guardar_menu(menu: dict[str, Decimal]) -> None:
     )
 
 
+def normalizar_nif(valor: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "", valor or "").upper()
+
+
+def normalizar_serie_ticket(valor: str) -> str:
+    serie = re.sub(r"[^A-Za-z0-9]", "", valor or "").upper()
+    return (serie or "A")[:10]
+
+
+def normalizar_numero_ticket(valor) -> int:
+    try:
+        numero = int(valor)
+    except (TypeError, ValueError):
+        return 1
+    return numero if numero >= 1 else 1
+
+
+def normalizar_iva(valor) -> int:
+    try:
+        iva = int(valor)
+    except (TypeError, ValueError):
+        return int(CONFIG_DEFAULT["iva_porcentaje"])
+    return iva if iva in IVA_OPCIONES else int(CONFIG_DEFAULT["iva_porcentaje"])
+
+
+def normalizar_config(config: dict | None) -> dict:
+    base = dict(CONFIG_DEFAULT)
+    if isinstance(config, dict):
+        for clave in CONFIG_DEFAULT:
+            if clave in config and config[clave] is not None:
+                base[clave] = config[clave]
+    base["whatsapp_telefono"] = normalizar_telefono(str(base.get("whatsapp_telefono", "")))
+    base["nombre_bar"] = (
+        str(base.get("nombre_bar") or CONFIG_DEFAULT["nombre_bar"]).strip()
+        or CONFIG_DEFAULT["nombre_bar"]
+    )
+    base["imagen_marca"] = str(base.get("imagen_marca") or "").strip()
+    if base["imagen_marca"] and not (MARCA_DIR / base["imagen_marca"]).exists():
+        base["imagen_marca"] = ""
+    barmans = base.get("barmans") or []
+    if not isinstance(barmans, list):
+        barmans = []
+    base["barmans"] = sorted(
+        {str(b).strip() for b in barmans if str(b).strip()},
+        key=str.casefold,
+    )
+    base["razon_social"] = " ".join(str(base.get("razon_social") or "").split())
+    base["nif"] = normalizar_nif(str(base.get("nif") or ""))
+    base["direccion_fiscal"] = str(base.get("direccion_fiscal") or "").strip()
+    base["iva_porcentaje"] = normalizar_iva(base.get("iva_porcentaje"))
+    base["serie_ticket"] = normalizar_serie_ticket(str(base.get("serie_ticket") or "A"))
+    base["proximo_numero_ticket"] = normalizar_numero_ticket(
+        base.get("proximo_numero_ticket")
+    )
+    return base
+
+
 def cargar_config() -> dict:
     config = dict(CONFIG_DEFAULT)
     if CONFIG_FILE.exists():
         try:
             raw = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
             if isinstance(raw, dict):
-                for clave, valor_def in CONFIG_DEFAULT.items():
-                    if clave in raw and raw[clave] is not None:
-                        config[clave] = raw[clave]
+                config.update(raw)
         except (json.JSONDecodeError, TypeError, ValueError):
             pass
-    config["whatsapp_telefono"] = normalizar_telefono(
-        str(config.get("whatsapp_telefono", ""))
-    )
-    config["nombre_bar"] = str(
-        config.get("nombre_bar") or CONFIG_DEFAULT["nombre_bar"]
-    ).strip()
-    if not config["nombre_bar"]:
-        config["nombre_bar"] = CONFIG_DEFAULT["nombre_bar"]
-    config["imagen_marca"] = str(config.get("imagen_marca") or "").strip()
-    if config["imagen_marca"] and not (MARCA_DIR / config["imagen_marca"]).exists():
-        config["imagen_marca"] = ""
-    barmans = config.get("barmans") or []
-    if not isinstance(barmans, list):
-        barmans = []
-    config["barmans"] = sorted(
-        {str(b).strip() for b in barmans if str(b).strip()},
-        key=str.casefold,
-    )
-    return config
+    return normalizar_config(config)
 
 
 def guardar_config(config: dict) -> None:
-    barmans = config.get("barmans") or []
-    if not isinstance(barmans, list):
-        barmans = []
-    payload = {
-        "whatsapp_telefono": normalizar_telefono(
-            str(config.get("whatsapp_telefono", ""))
-        ),
-        "nombre_bar": str(
-            config.get("nombre_bar") or CONFIG_DEFAULT["nombre_bar"]
-        ).strip()
-        or CONFIG_DEFAULT["nombre_bar"],
-        "imagen_marca": str(config.get("imagen_marca") or "").strip(),
-        "barmans": sorted(
-            {str(b).strip() for b in barmans if str(b).strip()},
-            key=str.casefold,
-        ),
-    }
+    payload = normalizar_config(config)
     CONFIG_FILE.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -209,6 +239,34 @@ def ruta_imagen_marca(config: dict | None = None) -> Path | None:
         return None
     ruta = MARCA_DIR / nombre
     return ruta if ruta.exists() else None
+
+
+def png_logo_marca() -> bytes | None:
+    """Convierte el logo del bar a PNG para incrustarlo en el PDF."""
+    ruta = ruta_imagen_marca()
+    if ruta is None:
+        return None
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    try:
+        imagen = Image.open(ruta)
+        if imagen.mode in ("RGBA", "LA") or (
+            imagen.mode == "P" and "transparency" in imagen.info
+        ):
+            fondo = Image.new("RGB", imagen.size, (255, 255, 255))
+            rgba = imagen.convert("RGBA")
+            fondo.paste(rgba, mask=rgba.split()[-1])
+            imagen = fondo
+        else:
+            imagen = imagen.convert("RGB")
+        imagen.thumbnail((480, 240))
+        buffer = io.BytesIO()
+        imagen.save(buffer, format="PNG")
+        return buffer.getvalue()
+    except (OSError, ValueError):
+        return None
 
 
 def guardar_imagen_marca(archivo) -> str:
@@ -249,11 +307,23 @@ def normalizar_estructura_mesa(datos) -> dict:
     historial = datos.get("historial")
     if not isinstance(historial, list):
         historial = []
-    return {
+    mesa = {
         "abierta_en": str(datos.get("abierta_en") or ahora_iso()),
         "comensales": limpios,
         "historial": historial,
     }
+    ticket = datos.get("ticket_fiscal")
+    if (
+        isinstance(ticket, dict)
+        and isinstance(ticket.get("huella"), str)
+        and isinstance(ticket.get("datos"), dict)
+        and ticket["datos"].get("ticket")
+    ):
+        mesa["ticket_fiscal"] = {
+            "huella": ticket["huella"],
+            "datos": ticket["datos"],
+        }
+    return mesa
 
 
 def cargar_mesas() -> dict:
@@ -330,29 +400,9 @@ def set_config(cambios: dict) -> None:
     """Actualiza la configuración fusionando con la actual y persistiendo."""
     actual = dict(st.session_state.config)
     actual.update(cambios)
-    actual["whatsapp_telefono"] = normalizar_telefono(
-        str(actual.get("whatsapp_telefono", ""))
-    )
-    actual["nombre_bar"] = (
-        str(actual.get("nombre_bar") or CONFIG_DEFAULT["nombre_bar"]).strip()
-        or CONFIG_DEFAULT["nombre_bar"]
-    )
-    actual["imagen_marca"] = str(actual.get("imagen_marca") or "").strip()
-    barmans = actual.get("barmans") or []
-    if not isinstance(barmans, list):
-        barmans = []
-    actual["barmans"] = sorted(
-        {str(b).strip() for b in barmans if str(b).strip()},
-        key=str.casefold,
-    )
-    st.session_state.config = {
-        "whatsapp_telefono": actual["whatsapp_telefono"],
-        "nombre_bar": actual["nombre_bar"],
-        "imagen_marca": actual["imagen_marca"],
-        "barmans": actual["barmans"],
-    }
+    st.session_state.config = normalizar_config(actual)
     guardar_config(st.session_state.config)
-    if st.session_state.get("barman_activo") not in actual["barmans"]:
+    if st.session_state.get("barman_activo") not in st.session_state.config["barmans"]:
         st.session_state.barman_activo = None
 
 
@@ -570,6 +620,7 @@ def vaciar_mesa(nombre: str) -> None:
             persistir=False,
         )
         st.session_state.mesas[nombre]["comensales"] = {}
+        st.session_state.mesas[nombre].pop("ticket_fiscal", None)
         if st.session_state.mesa_activa == nombre:
             st.session_state.persona_activa = None
         guardar_mesas()
@@ -1580,6 +1631,197 @@ def ui_resumen_y_whatsapp(total_general: Decimal) -> None:
             else f"Abre WhatsApp con el resumen de «{mesa}» listo para elegir contacto."
         ),
     )
+    ui_ticket_fiscal(mesa, pedidos)
+
+
+def lineas_agrupadas(
+    pedidos: dict, menu: dict[str, Decimal]
+) -> tuple[list[dict], Decimal]:
+    """Suma las consumiciones de todos los comensales, por producto."""
+    cantidades: dict[str, int] = {}
+    for consumo in pedidos.values():
+        if not isinstance(consumo, dict):
+            continue
+        for producto, cantidad in consumo.items():
+            cantidades[producto] = cantidades.get(producto, 0) + int(cantidad)
+    orden = [p for p in menu if cantidades.get(p, 0) > 0]
+    orden += [p for p in cantidades if p not in menu and cantidades[p] > 0]
+    lineas = []
+    total = Decimal("0.00")
+    for producto in orden:
+        cantidad = cantidades[producto]
+        precio = menu.get(producto, Decimal("0.00"))
+        subtotal = (precio * cantidad).quantize(Decimal("0.01"))
+        total += subtotal
+        lineas.append(
+            {
+                "producto": nombre_limpio(producto) or str(producto),
+                "cantidad": cantidad,
+                "precio": f"{precio:.2f}",
+                "subtotal": f"{subtotal:.2f}",
+            }
+        )
+    return lineas, total.quantize(Decimal("0.01"))
+
+
+def fiscal_para_huella(config: dict) -> dict:
+    return {
+        "nif": config.get("nif", ""),
+        "iva_porcentaje": config.get("iva_porcentaje", 0),
+        "serie_ticket": config.get("serie_ticket", "A"),
+        "razon_social": config.get("razon_social", ""),
+        "direccion_fiscal": config.get("direccion_fiscal", ""),
+    }
+
+
+def ticket_de_mesa(mesa: str, huella: str) -> dict | None:
+    guardado = (st.session_state.mesas.get(mesa) or {}).get("ticket_fiscal")
+    if not isinstance(guardado, dict) or guardado.get("huella") != huella:
+        return None
+    datos = guardado.get("datos")
+    if isinstance(datos, dict) and datos.get("ticket"):
+        return datos
+    return None
+
+
+def siguiente_numero_ticket() -> tuple[str, str, int]:
+    """Reserva el siguiente correlativo (A-00001) y lo guarda en la configuración."""
+    config = st.session_state.config
+    serie = str(config["serie_ticket"])
+    numero = int(config["proximo_numero_ticket"])
+    codigo = f"{serie}-{numero:05d}"
+    set_config({"proximo_numero_ticket": numero + 1})
+    return codigo, serie, numero
+
+
+def emitir_ticket_fiscal(mesa: str, lineas: list[dict], total: Decimal) -> dict:
+    """Asigna número si esta cuenta aún no tiene ticket y lo deja en la mesa."""
+    config = st.session_state.config
+    total_txt = f"{total:.2f}"
+    huella = huella_cuenta(mesa, lineas, total_txt, fiscal_para_huella(config))
+    ya = ticket_de_mesa(mesa, huella)
+    if ya:
+        return ya
+    codigo, serie, numero = siguiente_numero_ticket()
+    desglose = desglose_iva(total, int(config["iva_porcentaje"]))
+    razon = str(config.get("razon_social") or "").strip() or nombre_del_bar()
+    datos = {
+        "ticket": codigo,
+        "serie": serie,
+        "numero": numero,
+        "fecha": ahora_iso(),
+        "razon_social": razon,
+        "nombre_bar": nombre_del_bar(),
+        "nif": config.get("nif") or "",
+        "direccion": config.get("direccion_fiscal") or "",
+        "mesa": mesa,
+        "barman": barman_activo() or "(sin identificar)",
+        "lineas": lineas,
+        "iva_porcentaje": desglose["iva_porcentaje"],
+        "base": desglose["base"],
+        "cuota_iva": desglose["cuota_iva"],
+        "total": desglose["total"],
+    }
+    st.session_state.mesas[mesa]["ticket_fiscal"] = {"huella": huella, "datos": datos}
+    registrar_evento(
+        mesa,
+        "ticket_fiscal",
+        detalle=f"Ticket fiscal {codigo} por {desglose['total']} EUR",
+        persistir=True,
+    )
+    return datos
+
+
+def ui_ticket_fiscal(mesa: str, pedidos: dict) -> None:
+    """Botones de ticket térmico 80 mm y factura A4, con QR en el PDF."""
+    st.markdown("---")
+    st.subheader("Ticket fiscal")
+    config = st.session_state.config
+    if not config.get("razon_social") or not config.get("nif"):
+        st.warning(
+            "Faltan datos fiscales (razón social o NIF). "
+            "Puedes completarlos en la barra lateral, en **Datos fiscales**."
+        )
+    else:
+        st.caption(
+            f"Emisor: **{config['razon_social']}** · NIF **{config['nif']}** · "
+            f"IVA {config['iva_porcentaje']} % · "
+            f"próximo número **{config['serie_ticket']}-{int(config['proximo_numero_ticket']):05d}**"
+        )
+
+    lineas, total = lineas_agrupadas(pedidos, st.session_state.menu)
+    if not lineas or total <= 0:
+        st.info("Añade consumiciones con importe para emitir el ticket fiscal.")
+        return
+
+    huella = huella_cuenta(
+        mesa, lineas, f"{total:.2f}", fiscal_para_huella(config)
+    )
+    datos = ticket_de_mesa(mesa, huella)
+    st.caption(
+        "Los productos se agrupan sin distinguir comensal. "
+        "Térmica 80 mm o A4. El QR se lee en el movil: la eñe y las tildes "
+        "salen sin acento para que el lector no las cambie. "
+        "La misma cuenta no consume otro número si vuelves a descargarla."
+    )
+
+    if datos is None:
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button(
+                "🧾 Ticket térmico (80 mm)",
+                use_container_width=True,
+                type="primary",
+                help="Asigna el número de ticket y prepara el PDF para impresora de 80 mm.",
+            ):
+                if exigir_barman():
+                    emitir_ticket_fiscal(mesa, lineas, total)
+                    st.rerun()
+        with c2:
+            if st.button(
+                "📄 Factura A4",
+                use_container_width=True,
+                type="primary",
+                help="Asigna el número de ticket y prepara el PDF en formato A4.",
+            ):
+                if exigir_barman():
+                    emitir_ticket_fiscal(mesa, lineas, total)
+                    st.rerun()
+        return
+
+    logo = png_logo_marca()
+    try:
+        pdf_termica = generar_pdf_ticket(datos, "termica", logo)
+        pdf_a4 = generar_pdf_ticket(datos, "a4", logo)
+    except Exception as err:
+        st.error(f"No se pudo generar el PDF: {err}")
+        return
+
+    st.success(
+        f"Ticket **{datos['ticket']}** emitido el {formatear_ts(str(datos.get('fecha', '')))} "
+        f"por {datos.get('barman', '')}."
+    )
+    d1, d2 = st.columns(2)
+    with d1:
+        st.download_button(
+            "🧾 Ticket térmico (80 mm)",
+            data=pdf_termica,
+            file_name=f"ticket-{datos['ticket']}-80mm.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+            type="primary",
+            help="Descarga el PDF de 80 mm. Imprímelo con Ctrl+P en la impresora térmica.",
+        )
+    with d2:
+        st.download_button(
+            "📄 Factura A4",
+            data=pdf_a4,
+            file_name=f"factura-{datos['ticket']}-A4.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+            type="primary",
+            help="Descarga el PDF en A4. Imprímelo con Ctrl+P en una impresora normal.",
+        )
 
 
 # ============================================
@@ -1746,6 +1988,7 @@ with st.sidebar:
 - Los botones tienen **texto** (no solo iconos).
 - Los avisos de éxito o error aparecen **por escrito** en pantalla.
 - Las pestañas son: Mesas, Pedido, Ticket y Menú.
+- En Ticket puedes descargar el PDF fiscal (térmica 80 mm o A4) con QR.
             """
         )
 
@@ -1795,6 +2038,97 @@ with st.sidebar:
                 st.rerun()
         if telefono_actual:
             st.caption(f"Activo: **+{telefono_actual}**")
+
+    with st.expander("Datos fiscales", expanded=False):
+        st.caption(
+            "Salen en el ticket PDF. Los precios del menú se tratan como IVA incluido. "
+            "Con IVA 0 % el ticket indica «IVA incluido en los precios»."
+        )
+        cfg_fiscal = st.session_state.config
+        razon_input = st.text_input(
+            "Razón social",
+            value=cfg_fiscal.get("razon_social", ""),
+            placeholder="Ej: Bar El Rincón S.L.",
+            help="Nombre fiscal del emisor, tal como debe aparecer en el ticket.",
+            key="input_razon_social",
+        )
+        nif_input = st.text_input(
+            "NIF/CIF",
+            value=cfg_fiscal.get("nif", ""),
+            placeholder="B12345678",
+            help="NIF o CIF. Se guardan solo letras y números, en mayúsculas.",
+            key="input_nif",
+        )
+        direccion_input = st.text_area(
+            "Dirección fiscal",
+            value=cfg_fiscal.get("direccion_fiscal", ""),
+            placeholder="Calle Mayor 1, 28001 Madrid",
+            help="Dirección que se imprime bajo el NIF.",
+            key="input_direccion_fiscal",
+            height=80,
+        )
+        opciones_iva = list(IVA_OPCIONES)
+        iva_actual = int(cfg_fiscal.get("iva_porcentaje", 10))
+        if iva_actual not in opciones_iva:
+            iva_actual = 10
+        iva_input = st.selectbox(
+            "Tipo de IVA",
+            options=opciones_iva,
+            index=opciones_iva.index(iva_actual),
+            format_func=lambda valor: f"{valor} %",
+            help="Un solo tipo para todo el ticket. 10 % es el de hostelería; 21 % el general.",
+            key="select_iva",
+        )
+        c_serie, c_num = st.columns(2)
+        with c_serie:
+            serie_input = st.text_input(
+                "Serie del ticket",
+                value=cfg_fiscal.get("serie_ticket", "A"),
+                help="Prefijo del número. Ejemplo: A-00001.",
+                key="input_serie_ticket",
+            )
+        with c_num:
+            # Si se emite un ticket, el correlativo cambia fuera de este campo.
+            proximo_real = int(cfg_fiscal.get("proximo_numero_ticket", 1))
+            if (
+                "input_proximo_ticket" not in st.session_state
+                or st.session_state.get("_fiscal_numero_sync") != proximo_real
+            ):
+                st.session_state.input_proximo_ticket = proximo_real
+            st.session_state._fiscal_numero_sync = proximo_real
+            numero_input = st.number_input(
+                "Próximo número de ticket",
+                min_value=1,
+                step=1,
+                help="El siguiente ticket usará este número y luego sumará uno.",
+                key="input_proximo_ticket",
+            )
+        if st.button(
+            "Guardar datos fiscales",
+            use_container_width=True,
+            type="primary",
+            help="Guarda razón social, NIF, dirección, IVA, serie y próximo número.",
+        ):
+            set_config(
+                {
+                    "razon_social": razon_input,
+                    "nif": nif_input,
+                    "direccion_fiscal": direccion_input,
+                    "iva_porcentaje": int(iva_input),
+                    "serie_ticket": serie_input,
+                    "proximo_numero_ticket": int(numero_input),
+                }
+            )
+            guardado = st.session_state.config
+            st.success(
+                "Datos fiscales guardados. Próximo ticket: "
+                f"{guardado['serie_ticket']}-{int(guardado['proximo_numero_ticket']):05d}"
+            )
+            st.rerun()
+        st.caption(
+            "Próximo ticket: "
+            f"**{cfg_fiscal['serie_ticket']}-{int(cfg_fiscal['proximo_numero_ticket']):05d}**"
+        )
 
     st.markdown("---")
 
@@ -1881,5 +2215,6 @@ with tab_menu:
 
 st.caption(
     "Python + Streamlit · Precios con Decimal · Menú persistente en JSON · "
-    "Mesas con comensales · Interfaz pensada para teclado, tooltips y lectores de pantalla."
+    "Mesas con comensales · Ticket fiscal PDF con QR · "
+    "Interfaz pensada para teclado, tooltips y lectores de pantalla."
 )
